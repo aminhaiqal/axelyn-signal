@@ -65,13 +65,15 @@ The Compose defaults cap the app at 1 CPU/1 GiB, PostgreSQL at 0.75 CPU/768 MiB,
 
 The included optional `tunnel` service is the intended production access path. It uses an outbound Cloudflare Tunnel, while Cloudflare Access authenticates the operator before traffic reaches Axelyn Signal.
 
-1. In Cloudflare Zero Trust, create a remotely managed Tunnel and copy its tunnel token.
-2. Add a public hostname such as `signal.example.com` with service URL `http://app:3000`.
-3. Create a self-hosted Access application for that exact hostname.
-4. Add an Allow policy for the specific emails, identity-provider groups, or device posture you trust. Enable MFA at the identity provider where practical.
-5. Set `CLOUDFLARE_TUNNEL_TOKEN` in the uncommitted `.env` file.
-6. Set `OPENROUTER_SITE_URL=https://signal.example.com`.
-7. Start the full stack:
+1. Choose the hostname, for example `signal.example.com`.
+2. In Cloudflare Zero Trust, go to **Access controls → Applications**, create a **Self-hosted and private** application, and add that public hostname. Do this before publishing the tunnel route so there is no unauthenticated exposure window.
+3. Add an Allow policy for only the exact emails, identity-provider groups, or device posture you trust. Access is deny-by-default; do not add `Everyone` or all OTP users to the Allow policy.
+4. Select an existing identity provider. For a small V1, Cloudflare One-Time PIN with an exact-email Allow policy is sufficient. Enable MFA at the identity provider where practical.
+5. In Cloudflare, go to **Networking → Tunnels**, create a remotely managed tunnel, and copy its tunnel token.
+6. On the tunnel's **Routes** tab, add a **Published application** route for the hostname with service URL `http://app:3000`.
+7. In that route's origin settings, enable **Protect with Access** so `cloudflared` validates the Access JWT before proxying a request to the app.
+8. Set `CLOUDFLARE_TUNNEL_TOKEN` in the uncommitted `.env` file and set `OPENROUTER_SITE_URL` to the HTTPS hostname.
+9. Start the full stack:
 
 ```bash
 docker compose --profile tunnel up -d --build
@@ -79,7 +81,7 @@ docker compose --profile tunnel up -d --build
 
 On a VPS, keep the Compose loopback bindings unchanged and do not open ports 3000 or 5432 in the firewall. The tunnel does not need inbound HTTP/HTTPS ports. The tunnel token is a sensitive credential; rotate it in Cloudflare if it is exposed.
 
-Because the origin is reachable only through the Cloudflare Tunnel, Access enforcement belongs at the edge. If a future deployment exposes the origin through another route, add application-side validation of the Access JWT rather than trusting the identity header alone.
+Test one authorized identity and one unauthorized identity before considering the deployment complete. With **Protect with Access** enabled, `cloudflared` validates the JWT at the tunnel boundary. If a future deployment exposes the origin through another route, add application-side validation too; never trust the identity header by itself.
 
 ## Run the application outside Docker
 
