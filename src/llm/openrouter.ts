@@ -37,15 +37,11 @@ function parseJson(content: string): unknown {
 
 export class OpenRouterGateway implements LlmGateway {
   constructor(
-    private readonly apiKey = process.env.OPENROUTER_API_KEY,
+    private readonly apiKey: string,
     private readonly endpoint = "https://openrouter.ai/api/v1/chat/completions",
   ) {}
 
   async complete<T>(request: CompletionRequest<T>): Promise<CompletionResult<T>> {
-    if (!this.apiKey) {
-      throw new Error("OPENROUTER_API_KEY is not configured. Add it to .env.local and try again.");
-    }
-
     const jsonSchema = z.toJSONSchema(request.schema, {
       target: "draft-7",
       unrepresentable: "any",

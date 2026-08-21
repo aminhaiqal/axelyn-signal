@@ -9,11 +9,26 @@ import type {
 } from "@/domain/schemas";
 import type { PipelineEvent } from "@/pipeline/events";
 import type { RecentRun, StoredRun } from "@/persistence/types";
-import { ArrowUpRight, Chevron, Plus, SignalMark } from "./icons";
+import {
+  ArrowUpRight,
+  Chevron,
+  CloseIcon,
+  EyeIcon,
+  Plus,
+  SettingsIcon,
+  SignalMark,
+} from "./icons";
 
 type AgentName = "scout" | "explorer" | "critic" | "strategist";
 type StageStatus = "idle" | "active" | "done" | "skipped";
 type AppStatus = "idle" | "running" | "complete" | "stopped" | "error";
+
+interface OpenRouterKeyStatus {
+  configured: boolean;
+  encryption_ready: boolean;
+  display_hint: string | null;
+  updated_at: string | null;
+}
 
 const AGENTS: Array<{ id: AgentName; name: string; responsibility: string }> = [
   { id: "scout", name: "Scout", responsibility: "Qualify the signal" },
@@ -75,6 +90,22 @@ export function SignalWorkspace() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [apiConfigured, setApiConfigured] = useState<boolean | null>(null);
   const [models, setModels] = useState<Record<string, string>>({});
+  const [operatorEmail, setOperatorEmail] = useState<string | null>(null);
+  const [keyStatus, setKeyStatus] = useState<OpenRouterKeyStatus | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
+  const [settingsMessage, setSettingsMessage] = useState("");
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false);
+
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false);
+    setApiKeyInput("");
+    setShowApiKey(false);
+    setSettingsError("");
+    setSettingsMessage("");
+  }, []);
 
   const loadRuns = useCallback(async () => {
     try {
@@ -94,12 +125,90 @@ export function SignalWorkspace() {
       .catch(() => undefined);
     void fetch("/api/config")
       .then((response) => response.json())
-      .then((data: { openrouter_configured: boolean; models: Record<string, string> }) => {
+      .then((data: {
+        openrouter_configured: boolean;
+        openrouter: OpenRouterKeyStatus | null;
+        models: Record<string, string>;
+        operator_email: string | null;
+      }) => {
         setApiConfigured(data.openrouter_configured);
+        setKeyStatus(data.openrouter);
         setModels(data.models);
+        setOperatorEmail(data.operator_email);
       })
       .catch(() => setApiConfigured(false));
   }, [loadRuns]);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeSettings();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [closeSettings, settingsOpen]);
+
+  async function openSettings() {
+    setSettingsOpen(true);
+    setSettingsLoading(true);
+    setSettingsError("");
+    setSettingsMessage("");
+    try {
+      const response = await fetch("/api/settings/openrouter", { cache: "no-store" });
+      const data = (await response.json()) as { openrouter?: OpenRouterKeyStatus; error?: string };
+      if (!response.ok || !data.openrouter) throw new Error(data.error ?? "Settings could not be loaded.");
+      setKeyStatus(data.openrouter);
+      setApiConfigured(data.openrouter.configured && data.openrouter.encryption_ready);
+    } catch (caught) {
+      setSettingsError(caught instanceof Error ? caught.message : "Settings could not be loaded.");
+    } finally {
+      setSettingsLoading(false);
+    }
+  }
+
+  async function saveApiKey(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSettingsLoading(true);
+    setSettingsError("");
+    setSettingsMessage("");
+    try {
+      const response = await fetch("/api/settings/openrouter", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: apiKeyInput }),
+      });
+      const data = (await response.json()) as { openrouter?: OpenRouterKeyStatus; error?: string };
+      if (!response.ok || !data.openrouter) throw new Error(data.error ?? "The API key could not be saved.");
+      setKeyStatus(data.openrouter);
+      setApiConfigured(data.openrouter.configured && data.openrouter.encryption_ready);
+      setApiKeyInput("");
+      setShowApiKey(false);
+      setSettingsMessage("OpenRouter key saved.");
+    } catch (caught) {
+      setSettingsError(caught instanceof Error ? caught.message : "The API key could not be saved.");
+    } finally {
+      setSettingsLoading(false);
+    }
+  }
+
+  async function removeApiKey() {
+    if (!window.confirm("Remove the stored OpenRouter API key? Pipeline runs will stop until a new key is saved.")) return;
+    setSettingsLoading(true);
+    setSettingsError("");
+    setSettingsMessage("");
+    try {
+      const response = await fetch("/api/settings/openrouter", { method: "DELETE" });
+      const data = (await response.json()) as { openrouter?: OpenRouterKeyStatus; error?: string };
+      if (!response.ok || !data.openrouter) throw new Error(data.error ?? "The API key could not be removed.");
+      setKeyStatus(data.openrouter);
+      setApiConfigured(false);
+      setSettingsMessage("OpenRouter key removed.");
+    } catch (caught) {
+      setSettingsError(caught instanceof Error ? caught.message : "The API key could not be removed.");
+    } finally {
+      setSettingsLoading(false);
+    }
+  }
 
   const progress = useMemo(() => {
     const complete = Object.values(stages).filter((stage) => stage === "done").length;
@@ -253,10 +362,12 @@ export function SignalWorkspace() {
           <span className="brand-product">Signal</span>
         </div>
 
-        <button className="new-signal" type="button" onClick={newSignal} disabled={status === "running"}>
-          <Plus />
-          New signal
-        </button>
+        <div className="sidebar-actions">
+          <button className="new-signal" type="button" onClick={newSignal} disabled={status === "running"}>
+            <Plus />
+            New signal
+          </button>
+        </div>
 
         <nav className="history" aria-label="Recent pipeline runs">
           <div className="rail-heading">
@@ -284,6 +395,12 @@ export function SignalWorkspace() {
           </div>
         </nav>
 
+        <button className="settings-trigger" type="button" onClick={() => void openSettings()}>
+          <SettingsIcon />
+          <span>Settings</span>
+          <span className={`settings-key-dot ${apiConfigured ? "is-ready" : ""}`} />
+        </button>
+
         <div className="human-note">
           <span className="human-dot" />
           <div><strong>Human review required</strong><span>Signal never publishes content.</span></div>
@@ -297,10 +414,10 @@ export function SignalWorkspace() {
             <span className="topbar-separator">/</span>
             <span className="topbar-location">Editorial workspace</span>
           </div>
-          <div className={`gateway-status ${apiConfigured ? "is-ready" : ""}`}>
+          <button className={`gateway-status ${apiConfigured ? "is-ready" : ""}`} type="button" onClick={() => void openSettings()}>
             <span />
-            {apiConfigured === null ? "Checking gateway" : apiConfigured ? "OpenRouter connected" : "API key needed"}
-          </div>
+            {apiConfigured === null ? "Checking gateway" : apiConfigured ? "OpenRouter ready" : "OpenRouter setup needed"}
+          </button>
         </header>
 
         <div className="workspace-content">
@@ -356,7 +473,7 @@ export function SignalWorkspace() {
 
             {apiConfigured === false && (
               <div className="config-notice" role="status">
-                Add <code>OPENROUTER_API_KEY</code> to <code>.env.local</code> before running the pipeline.
+                Add an OpenRouter API key in <button type="button" onClick={() => void openSettings()}>Settings</button> before running the pipeline.
               </div>
             )}
           </section>
@@ -378,6 +495,138 @@ export function SignalWorkspace() {
           )}
         </div>
       </main>
+
+      <SettingsVault
+        open={settingsOpen}
+        onClose={closeSettings}
+        onSave={saveApiKey}
+        onRemove={() => void removeApiKey()}
+        status={keyStatus}
+        loading={settingsLoading}
+        error={settingsError}
+        message={settingsMessage}
+        apiKey={apiKeyInput}
+        setApiKey={setApiKeyInput}
+        showApiKey={showApiKey}
+        setShowApiKey={setShowApiKey}
+        models={models}
+        operatorEmail={operatorEmail}
+      />
+    </div>
+  );
+}
+
+function SettingsVault({
+  open,
+  onClose,
+  onSave,
+  onRemove,
+  status,
+  loading,
+  error,
+  message,
+  apiKey,
+  setApiKey,
+  showApiKey,
+  setShowApiKey,
+  models,
+  operatorEmail,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSave: (event: React.FormEvent<HTMLFormElement>) => void;
+  onRemove: () => void;
+  status: OpenRouterKeyStatus | null;
+  loading: boolean;
+  error: string;
+  message: string;
+  apiKey: string;
+  setApiKey: (value: string) => void;
+  showApiKey: boolean;
+  setShowApiKey: (value: boolean) => void;
+  models: Record<string, string>;
+  operatorEmail: string | null;
+}) {
+  return (
+    <div className={`settings-layer ${open ? "is-open" : ""}`} aria-hidden={!open} inert={!open}>
+      <button className="settings-scrim" type="button" onClick={onClose} tabIndex={open ? 0 : -1} aria-label="Close settings" />
+      <aside className="settings-vault" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <header className="vault-header">
+          <div>
+            <span className="eyebrow">Credential vault</span>
+            <h2 id="settings-title">Settings</h2>
+          </div>
+          <button className="vault-close" type="button" onClick={onClose} aria-label="Close settings"><CloseIcon /></button>
+        </header>
+
+        <div className="vault-scroll">
+          <section className="vault-section">
+            <div className="vault-section-heading">
+              <div><span>OpenRouter</span><p>One active gateway key for all bounded agents.</p></div>
+              <span className={`vault-status ${status?.configured && status.encryption_ready ? "is-ready" : ""}`}>
+                {status?.configured && status.encryption_ready ? "Ready" : "Setup needed"}
+              </span>
+            </div>
+
+            {status?.configured && (
+              <div className="stored-key-row">
+                <div><span>Stored key</span><strong>{status.display_hint}</strong></div>
+                <button type="button" onClick={onRemove} disabled={loading}>Remove</button>
+              </div>
+            )}
+
+            <form className="key-form" onSubmit={onSave}>
+              <label htmlFor="openrouter-key">{status?.configured ? "Replace API key" : "API key"}</label>
+              <div className="secret-input">
+                <input
+                  id="openrouter-key"
+                  value={apiKey}
+                  onChange={(event) => setApiKey(event.target.value)}
+                  type={showApiKey ? "text" : "password"}
+                  placeholder="sk-or-v1-…"
+                  autoComplete="off"
+                  spellCheck={false}
+                  minLength={20}
+                  maxLength={512}
+                  disabled={loading}
+                />
+                <button type="button" onClick={() => setShowApiKey(!showApiKey)} aria-label={showApiKey ? "Hide API key" : "Show API key"}>
+                  <EyeIcon crossed={showApiKey} />
+                </button>
+              </div>
+              <button className="save-key-button" type="submit" disabled={loading || apiKey.trim().length < 20}>
+                {loading ? "Saving…" : status?.configured ? "Replace key" : "Save key"}
+              </button>
+            </form>
+
+            {!status?.encryption_ready && (
+              <p className="vault-warning">Set <code>SETTINGS_ENCRYPTION_KEY</code> on the server before saving credentials.</p>
+            )}
+            {error && <p className="vault-error" role="alert">{error}</p>}
+            {message && <p className="vault-success" role="status">{message}</p>}
+            <p className="encryption-note">The key is encrypted with AES-256-GCM before PostgreSQL storage. It is never returned to this browser after saving.</p>
+          </section>
+
+          <section className="vault-section">
+            <div className="vault-section-heading">
+              <div><span>Agent models</span><p>Configured at deployment and shown here for audit.</p></div>
+            </div>
+            <div className="model-roster">
+              {AGENTS.map((agent) => (
+                <div key={agent.id}><span>{agent.name}</span><strong>{models[agent.id] ?? "Not configured"}</strong></div>
+              ))}
+            </div>
+          </section>
+
+          <section className="vault-section access-section">
+            <div className="vault-section-heading">
+              <div><span>Access boundary</span><p>Authentication is enforced before traffic reaches the application.</p></div>
+            </div>
+            <div className="access-identity"><span>Current operator</span><strong>{operatorEmail ?? "Local development session"}</strong></div>
+            <p>Production traffic should reach this container only through a Cloudflare Tunnel protected by an Access policy.</p>
+          </section>
+        </div>
+      </aside>
     </div>
   );
 }

@@ -1,7 +1,8 @@
 import { SignalInputSchema } from "@/domain/schemas";
 import { OpenRouterGateway } from "@/llm/openrouter";
-import { SqlitePipelineRepository } from "@/persistence/sqlite-repository";
+import { PostgresPipelineRepository } from "@/persistence/postgres-repository";
 import { runPipeline } from "@/pipeline/orchestrator";
+import { OpenRouterKeyStore } from "@/security/openrouter-key-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +23,20 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
+  let apiKey: string | null;
+  try {
+    apiKey = await new OpenRouterKeyStore().getApiKey();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "OpenRouter settings are unavailable.";
+    return Response.json({ error: message }, { status: 503 });
+  }
+  if (!apiKey) {
+    return Response.json(
+      { error: "Add an OpenRouter API key in Settings before running the pipeline." },
+      { status: 409 },
+    );
+  }
+
   const encoder = new TextEncoder();
   let acceptingEvents = true;
   const stream = new ReadableStream<Uint8Array>({
@@ -36,8 +51,8 @@ export async function POST(request: Request): Promise<Response> {
       };
 
       void runPipeline(input.data, {
-        gateway: new OpenRouterGateway(),
-        repository: new SqlitePipelineRepository(),
+        gateway: new OpenRouterGateway(apiKey),
+        repository: new PostgresPipelineRepository(),
         onEvent: send,
       })
         .catch(() => {

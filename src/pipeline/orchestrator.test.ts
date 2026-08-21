@@ -29,19 +29,19 @@ class MemoryRepository implements PipelineRepository {
   strategies: StrategistEvaluation[] = [];
   briefs: FinalBrief[] = [];
 
-  createRun(id: string, input: SignalInput, models: Record<string, string>) { void [id, input, models]; }
-  startAgentRun(runId: string, agent: AgentName): string { void runId; return `${agent}-run`; }
-  completeAgentRun(agentRunId: string, completion: AgentRunCompletion) { void [agentRunId, completion]; }
-  failAgentRun(agentRunId: string, error: string, durationMs: number) { void [agentRunId, error, durationMs]; }
-  saveScout(runId: string, output: ScoutOutput) { void [runId, output]; }
-  saveCandidates(runId: string, candidates: Candidate[]) { void runId; this.candidates = candidates; }
-  saveCritiques(runId: string, critiques: CriticEvaluation[]) { void runId; this.critiques = critiques; }
-  saveStrategies(runId: string, strategies: StrategistEvaluation[]) { void runId; this.strategies = strategies; }
-  saveBriefs(runId: string, briefs: FinalBrief[]) { void runId; this.briefs = briefs; }
-  finishRun(runId: string, status: "COMPLETED" | "STOPPED", totals: Usage, models: Record<string, string>) { void [runId, status, totals, models]; }
-  failRun(runId: string, error: string) { void [runId, error]; }
-  listRuns(limit?: number): RecentRun[] { void limit; return []; }
-  getRun(id: string): StoredRun | null { void id; return null; }
+  async createRun(id: string, input: SignalInput, models: Record<string, string>) { void [id, input, models]; }
+  async startAgentRun(runId: string, agent: AgentName): Promise<string> { void runId; return `${agent}-run`; }
+  async completeAgentRun(agentRunId: string, completion: AgentRunCompletion) { void [agentRunId, completion]; }
+  async failAgentRun(agentRunId: string, error: string, durationMs: number) { void [agentRunId, error, durationMs]; }
+  async saveScout(runId: string, output: ScoutOutput) { void [runId, output]; }
+  async saveCandidates(runId: string, candidates: Candidate[]) { void runId; this.candidates = candidates; }
+  async saveCritiques(runId: string, critiques: CriticEvaluation[]) { void runId; this.critiques = critiques; }
+  async saveStrategies(runId: string, strategies: StrategistEvaluation[]) { void runId; this.strategies = strategies; }
+  async saveBriefs(runId: string, briefs: FinalBrief[]) { void runId; this.briefs = briefs; }
+  async finishRun(runId: string, status: "COMPLETED" | "STOPPED", totals: Usage, models: Record<string, string>) { void [runId, status, totals, models]; }
+  async failRun(runId: string, error: string) { void [runId, error]; }
+  async listRuns(limit?: number): Promise<RecentRun[]> { void limit; return []; }
+  async getRun(id: string): Promise<StoredRun | null> { void id; return null; }
 }
 
 class FixtureGateway implements LlmGateway {

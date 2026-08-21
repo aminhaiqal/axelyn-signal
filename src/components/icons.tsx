@@ -31,3 +31,32 @@ export function Plus(props: SVGProps<SVGSVGElement>) {
     </svg>
   );
 }
+
+export function SettingsIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" {...props}>
+      <path d="M4 5h8m3 0h1M4 10h2m3 0h7M4 15h7m3 0h2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="13.5" cy="5" r="1.5" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="7.5" cy="10" r="1.5" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="12.5" cy="15" r="1.5" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+export function CloseIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" {...props}>
+      <path d="m5 5 10 10M15 5 5 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function EyeIcon({ crossed = false, ...props }: SVGProps<SVGSVGElement> & { crossed?: boolean }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" {...props}>
+      <path d="M2.5 10s2.7-4.5 7.5-4.5 7.5 4.5 7.5 4.5-2.7 4.5-7.5 4.5S2.5 10 2.5 10Z" stroke="currentColor" strokeWidth="1.4" />
+      <circle cx="10" cy="10" r="2" stroke="currentColor" strokeWidth="1.4" />
+      {crossed && <path d="M4 4l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />}
+    </svg>
+  );
+}

@@ -93,13 +93,11 @@ export async function runPipeline(
   const actualModels: Record<string, string> = { ...configuredModels };
   const runId = randomUUID();
   let totalUsage = emptyUsage();
-
-  repository.createRun(runId, input, configuredModels);
-  await onEvent({ type: "run_started", run_id: runId, models: configuredModels });
+  let runCreated = false;
 
   async function executeStage<T>(request: StageRequest<T>): Promise<CompletionResult<T>> {
     await onEvent({ type: "stage_started", run_id: runId, stage: request.agent });
-    const agentRunId = repository.startAgentRun(
+    const agentRunId = await repository.startAgentRun(
       runId,
       request.agent,
       request.config.model,
@@ -114,7 +112,7 @@ export async function runPipeline(
         schema: request.schema,
         config: request.config,
       });
-      repository.completeAgentRun(agentRunId, {
+      await repository.completeAgentRun(agentRunId, {
         output: result.data,
         model: result.model,
         provider: result.provider,
@@ -127,12 +125,16 @@ export async function runPipeline(
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown model error";
-      repository.failAgentRun(agentRunId, message, Math.round(performance.now() - startedAt));
+      await repository.failAgentRun(agentRunId, message, Math.round(performance.now() - startedAt));
       throw error;
     }
   }
 
   try {
+    await repository.createRun(runId, input, configuredModels);
+    runCreated = true;
+    await onEvent({ type: "run_started", run_id: runId, models: configuredModels });
+
     const scoutResult = await executeStage({
       runId,
       agent: "scout",
@@ -144,7 +146,7 @@ export async function runPipeline(
       persistenceInput: input,
     });
     const scout = scoutResult.data;
-    repository.saveScout(runId, scout);
+    await repository.saveScout(runId, scout);
     await onEvent({
       type: "stage_completed",
       run_id: runId,
@@ -161,7 +163,7 @@ export async function runPipeline(
         usage: totalUsage,
         models: actualModels,
       });
-      repository.finishRun(runId, "STOPPED", totalUsage, actualModels);
+      await repository.finishRun(runId, "STOPPED", totalUsage, actualModels);
       await onEvent({ type: "pipeline_completed", run_id: runId, result });
       return result;
     }
@@ -184,7 +186,7 @@ export async function runPipeline(
       ...candidate,
       id: randomUUID(),
     }));
-    repository.saveCandidates(runId, candidates);
+    await repository.saveCandidates(runId, candidates);
     await onEvent({
       type: "stage_completed",
       run_id: runId,
@@ -203,7 +205,7 @@ export async function runPipeline(
       persistenceInput: { scout, candidates },
     });
     assertMatchingIds("Critic", candidates, criticResult.data.evaluations);
-    repository.saveCritiques(runId, criticResult.data.evaluations);
+    await repository.saveCritiques(runId, criticResult.data.evaluations);
     const critiquesById = new Map(
       criticResult.data.evaluations.map((evaluation) => [evaluation.candidate_id, evaluation]),
     );
@@ -248,7 +250,7 @@ export async function runPipeline(
           calculateStrategistScore(evaluation),
         ]),
       );
-      repository.saveStrategies(runId, strategistResult.data.evaluations, scores);
+      await repository.saveStrategies(runId, strategistResult.data.evaluations, scores);
 
       briefs = strategistResult.data.evaluations
         .filter((evaluation) => evaluation.readiness_status !== "KILLED")
@@ -276,7 +278,7 @@ export async function runPipeline(
         .sort((a, b) => b.score - a.score)
         .slice(0, 5)
         .map((brief, index) => ({ ...brief, rank: index + 1 }));
-      repository.saveBriefs(runId, briefs);
+      await repository.saveBriefs(runId, briefs);
       await onEvent({
         type: "stage_completed",
         run_id: runId,
@@ -300,12 +302,18 @@ export async function runPipeline(
       usage: totalUsage,
       models: actualModels,
     });
-    repository.finishRun(runId, "COMPLETED", totalUsage, actualModels);
+    await repository.finishRun(runId, "COMPLETED", totalUsage, actualModels);
     await onEvent({ type: "pipeline_completed", run_id: runId, result });
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : "The pipeline failed unexpectedly.";
-    repository.failRun(runId, message);
+    if (runCreated) {
+      try {
+        await repository.failRun(runId, message);
+      } catch {
+        // Preserve the original pipeline error even if persistence is also unavailable.
+      }
+    }
     await onEvent({ type: "pipeline_failed", run_id: runId, error: message });
     throw error;
   }

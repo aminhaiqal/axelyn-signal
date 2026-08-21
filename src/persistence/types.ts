@@ -42,17 +42,17 @@ export interface StoredRun extends RecentRun {
 }
 
 export interface PipelineRepository {
-  createRun(id: string, input: SignalInput, models: Record<string, string>): void;
-  startAgentRun(runId: string, agent: AgentName, model: string, input: unknown): string;
-  completeAgentRun(agentRunId: string, completion: AgentRunCompletion): void;
-  failAgentRun(agentRunId: string, error: string, durationMs: number): void;
-  saveScout(runId: string, output: ScoutOutput): void;
-  saveCandidates(runId: string, candidates: Candidate[]): void;
-  saveCritiques(runId: string, critiques: CriticEvaluation[]): void;
-  saveStrategies(runId: string, strategies: StrategistEvaluation[], scores: Map<string, number>): void;
-  saveBriefs(runId: string, briefs: FinalBrief[]): void;
-  finishRun(runId: string, status: "COMPLETED" | "STOPPED", usage: Usage, models: Record<string, string>): void;
-  failRun(runId: string, error: string): void;
-  listRuns(limit?: number): RecentRun[];
-  getRun(id: string): StoredRun | null;
+  createRun(id: string, input: SignalInput, models: Record<string, string>): Promise<void>;
+  startAgentRun(runId: string, agent: AgentName, model: string, input: unknown): Promise<string>;
+  completeAgentRun(agentRunId: string, completion: AgentRunCompletion): Promise<void>;
+  failAgentRun(agentRunId: string, error: string, durationMs: number): Promise<void>;
+  saveScout(runId: string, output: ScoutOutput): Promise<void>;
+  saveCandidates(runId: string, candidates: Candidate[]): Promise<void>;
+  saveCritiques(runId: string, critiques: CriticEvaluation[]): Promise<void>;
+  saveStrategies(runId: string, strategies: StrategistEvaluation[], scores: Map<string, number>): Promise<void>;
+  saveBriefs(runId: string, briefs: FinalBrief[]): Promise<void>;
+  finishRun(runId: string, status: "COMPLETED" | "STOPPED", usage: Usage, models: Record<string, string>): Promise<void>;
+  failRun(runId: string, error: string): Promise<void>;
+  listRuns(limit?: number): Promise<RecentRun[]>;
+  getRun(id: string): Promise<StoredRun | null>;
 }
