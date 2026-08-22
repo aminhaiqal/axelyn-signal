@@ -1,0 +1,116 @@
+name: ${COMPOSE_PROJECT_NAME:-axelyn-signal}
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    cpus: ${DB_CPUS:-0.75}
+    mem_limit: ${DB_MEMORY_LIMIT:-768m}
+    pids_limit: 200
+    logging: *default-logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-axelyn}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-replace_me}
+      POSTGRES_DB: ${POSTGRES_DB:-axelyn_signal}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  app:
+    image: axelyn-signal-app:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cpus: ${APP_CPUS:-1.0}
+    mem_limit: ${APP_MEMORY_LIMIT:-1g}
+    pids_limit: 256
+    logging: *default-logging
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      NODE_ENV: production
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER:-axelyn}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-replace_me}
+      PGDATABASE: ${POSTGRES_DB:-axelyn_signal}
+      PG_POOL_MAX: ${PG_POOL_MAX:-5}
+      SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY:-replace_with_a_base64_32_byte_key}
+      OPENROUTER_SITE_URL: ${OPENROUTER_SITE_URL:-http://localhost:3000}
+      OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-Axelyn Signal}
+      SCOUT_MODEL: ${SCOUT_MODEL:-google/gemini-2.5-flash-lite}
+      EXPLORER_MODEL: ${EXPLORER_MODEL:-google/gemini-2.5-flash}
+      CRITIC_MODEL: ${CRITIC_MODEL:-deepseek/deepseek-v3.2}
+      STRATEGIST_MODEL: ${STRATEGIST_MODEL:-anthropic/claude-haiku-4.5}
+      SCOUT_TEMPERATURE: ${SCOUT_TEMPERATURE:-0.2}
+      EXPLORER_TEMPERATURE: ${EXPLORER_TEMPERATURE:-0.75}
+      CRITIC_TEMPERATURE: ${CRITIC_TEMPERATURE:-0.25}
+      STRATEGIST_TEMPERATURE: ${STRATEGIST_TEMPERATURE:-0.3}
+      SCOUT_MAX_OUTPUT_TOKENS: ${SCOUT_MAX_OUTPUT_TOKENS:-1600}
+      EXPLORER_MAX_OUTPUT_TOKENS: ${EXPLORER_MAX_OUTPUT_TOKENS:-5200}
+      CRITIC_MAX_OUTPUT_TOKENS: ${CRITIC_MAX_OUTPUT_TOKENS:-5200}
+      STRATEGIST_MAX_OUTPUT_TOKENS: ${STRATEGIST_MAX_OUTPUT_TOKENS:-6200}
+      SCOUT_INPUT_PRICE: ${SCOUT_INPUT_PRICE:-0.0000001}
+      SCOUT_OUTPUT_PRICE: ${SCOUT_OUTPUT_PRICE:-0.0000004}
+      EXPLORER_INPUT_PRICE: ${EXPLORER_INPUT_PRICE:-0.0000003}
+      EXPLORER_OUTPUT_PRICE: ${EXPLORER_OUTPUT_PRICE:-0.0000025}
+      CRITIC_INPUT_PRICE: ${CRITIC_INPUT_PRICE:-0.000000269}
+      CRITIC_OUTPUT_PRICE: ${CRITIC_OUTPUT_PRICE:-0.0000004}
+      STRATEGIST_INPUT_PRICE: ${STRATEGIST_INPUT_PRICE:-0.000001}
+      STRATEGIST_OUTPUT_PRICE: ${STRATEGIST_OUTPUT_PRICE:-0.000005}
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    cpus: ${TUNNEL_CPUS:-0.25}
+    mem_limit: ${TUNNEL_MEMORY_LIMIT:-256m}
+    pids_limit: 100
+    logging: *default-logging
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN:-not_configured}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
