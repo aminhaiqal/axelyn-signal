@@ -27,9 +27,9 @@ require_setting() {
 
 command -v docker >/dev/null 2>&1 || fail "Docker is not installed."
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is not available."
-docker info >/dev/null 2>&1 || fail "The runner account cannot access the Docker daemon."
+docker info >/dev/null 2>&1 || fail "The deployment account cannot access the Docker daemon."
 
-[[ -r "$env_file" ]] || fail "The runner cannot read ${env_file}."
+[[ -r "$env_file" ]] || fail "The deployment account cannot read ${env_file}."
 [[ "$wait_timeout" =~ ^[1-9][0-9]*$ ]] || fail "AXELYN_DEPLOY_WAIT_TIMEOUT must be a positive integer."
 
 require_setting POSTGRES_PASSWORD

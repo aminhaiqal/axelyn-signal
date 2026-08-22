@@ -47,10 +47,7 @@ jobs:
     name: Deploy main to the VPS
     needs: validate
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on:
-      - self-hosted
-      - linux
-      - axelyn-signal
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: production
     steps:
@@ -60,8 +57,90 @@ jobs:
           clean: true
           persist-credentials: false
 
-      - name: Build and deploy the Compose stack
+      - name: Validate SSH configuration
         env:
-          AXELYN_ENV_FILE: /opt/axelyn-signal/.env
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+
+          required=(VPS_HOST VPS_USER VPS_SSH_PRIVATE_KEY VPS_SSH_KNOWN_HOSTS)
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              printf 'Missing required production secret: %s\n' "$name" >&2
+              exit 1
+            fi
+          done
+
+          [[ "$VPS_PORT" =~ ^[0-9]+$ ]] || {
+            printf 'VPS_PORT must be numeric.\n' >&2
+            exit 1
+          }
+          ((VPS_PORT >= 1 && VPS_PORT <= 65535)) || {
+            printf 'VPS_PORT must be between 1 and 65535.\n' >&2
+            exit 1
+          }
+          [[ "$VPS_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || {
+            printf 'VPS_USER is not a valid Linux account name.\n' >&2
+            exit 1
+          }
+          [[ "$VPS_HOST" != -* && ! "$VPS_HOST" =~ [[:space:]] ]] || {
+            printf 'VPS_HOST is not valid.\n' >&2
+            exit 1
+          }
+
+      - name: Configure SSH
+        env:
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" | tr -d '\r' > "$HOME/.ssh/axelyn_deploy"
+          printf '%s\n' "$VPS_SSH_KNOWN_HOSTS" | tr -d '\r' > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/axelyn_deploy" "$HOME/.ssh/known_hosts"
+
+      - name: Deploy the validated commit over SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+          VPS_USER: ${{ secrets.VPS_USER }}
           AXELYN_COMPOSE_PROFILE: ${{ vars.AXELYN_COMPOSE_PROFILE || 'tunnel' }}
-        run: bash scripts/deploy-vps.sh
+        run: |
+          set -Eeuo pipefail
+
+          common_options=(
+            -i "$HOME/.ssh/axelyn_deploy"
+            -o BatchMode=yes
+            -o ConnectTimeout=15
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts"
+          )
+
+          release_id="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          archive_name="axelyn-signal-${release_id}.tar.gz"
+          remote_script_name="axelyn-remote-deploy-${release_id}.sh"
+          remote_incoming_dir="/opt/axelyn-signal/incoming"
+          archive_path="$RUNNER_TEMP/$archive_name"
+          remote_script_path="$RUNNER_TEMP/$remote_script_name"
+
+          git archive --format=tar.gz --output="$archive_path" "$GITHUB_SHA"
+          cp scripts/remote-deploy-vps.sh "$remote_script_path"
+
+          scp "${common_options[@]}" -P "$VPS_PORT" \
+            "$archive_path" "$remote_script_path" \
+            "$VPS_USER@$VPS_HOST:$remote_incoming_dir/"
+
+          printf -v remote_command 'bash %q %q %q %q %q' \
+            "$remote_incoming_dir/$remote_script_name" \
+            "$GITHUB_SHA" \
+            "$AXELYN_COMPOSE_PROFILE" \
+            "$remote_incoming_dir/$archive_name" \
+            "$release_id"
+
+          ssh "${common_options[@]}" -p "$VPS_PORT" \
+            "$VPS_USER@$VPS_HOST" "$remote_command"
