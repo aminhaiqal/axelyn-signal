@@ -61,6 +61,40 @@ Both published ports bind to `127.0.0.1`, so the application and database are av
 
 The Compose defaults cap the app at 1 CPU/1 GiB, PostgreSQL at 0.75 CPU/768 MiB, and the tunnel at 0.25 CPU/256 MiB. They also rotate container logs and give Next.js 30 seconds to finish in-flight requests during shutdown. Override the corresponding `*_CPUS` or `*_MEMORY_LIMIT` values in `.env` when the host has different constraints.
 
+## Automatic VPS deployment with GitHub Actions
+
+The workflow in `.github/workflows/ci-cd.yml` runs lint, tests, and a production build for every push and for pull requests into `main`. A validated commit is deployed automatically only when it is on `main`.
+
+Deployment runs on a self-hosted GitHub Actions runner inside the VPS. This keeps the production `.env` on the server, avoids storing application secrets in GitHub, and does not require opening SSH to GitHub-hosted runners. The deployment rebuilds the Compose application image, waits for the existing health checks, and restores the previous application image when a new release does not become healthy.
+
+One-time VPS setup:
+
+1. Install Docker Engine with Docker Compose v2. Create a dedicated, non-root account such as `github-runner`, and grant it access to the Docker daemon. Docker access is effectively root-level access to the VPS, so only trusted maintainers should be able to change or merge repository code.
+2. Create the production environment file outside the runner workspace:
+
+```bash
+sudo install -d -m 0750 -o github-runner -g github-runner /opt/axelyn-signal
+sudo touch /opt/axelyn-signal/.env
+sudo chown github-runner:github-runner /opt/axelyn-signal/.env
+sudo chmod 0600 /opt/axelyn-signal/.env
+sudoedit /opt/axelyn-signal/.env
+```
+
+Copy the settings from `.env.example` and replace at least `POSTGRES_PASSWORD`, `SETTINGS_ENCRYPTION_KEY`, `CLOUDFLARE_TUNNEL_TOKEN`, and `OPENROUTER_SITE_URL` with production values.
+
+3. In GitHub, open **Settings → Actions → Runners → New self-hosted runner**. Select the VPS operating system and architecture, then run GitHub's displayed download and configuration commands as the dedicated runner account. Add `--labels axelyn-signal` to the displayed `config.sh` command.
+4. From the installed runner directory, install and start its service:
+
+```bash
+sudo ./svc.sh install github-runner
+sudo ./svc.sh start
+sudo ./svc.sh status
+```
+
+5. Confirm that the runner appears online with the `axelyn-signal` label in GitHub. Merge the workflow into `main`, or run **CI and VPS deploy** manually from the Actions tab using the `main` branch.
+
+The deployment starts the Cloudflare Tunnel profile by default. If the VPS intentionally does not use that profile, create a GitHub Actions repository variable named `AXELYN_COMPOSE_PROFILE` with the value `none`. The runner workspace is cleaned between deployments, so never put the production `.env` inside it.
+
 ## Protect it with Cloudflare Access
 
 The included optional `tunnel` service is the intended production access path. It uses an outbound Cloudflare Tunnel, while Cloudflare Access authenticates the operator before traffic reaches Axelyn Signal.

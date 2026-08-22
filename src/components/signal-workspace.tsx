@@ -30,11 +30,31 @@ interface OpenRouterKeyStatus {
   updated_at: string | null;
 }
 
-const AGENTS: Array<{ id: AgentName; name: string; responsibility: string }> = [
-  { id: "scout", name: "Scout", responsibility: "Qualify the signal" },
-  { id: "explorer", name: "Explorer", responsibility: "Find distinct angles" },
-  { id: "critic", name: "Critic", responsibility: "Attack weak ideas" },
-  { id: "strategist", name: "Strategist", responsibility: "Rank business value" },
+const AGENTS: Array<{ id: AgentName; name: string; responsibility: string; support: string }> = [
+  {
+    id: "scout",
+    name: "Scout",
+    responsibility: "Qualify the signal",
+    support: "Stops weak signals before the rest of the run spends tokens.",
+  },
+  {
+    id: "explorer",
+    name: "Explorer",
+    responsibility: "Find distinct angles",
+    support: "Turns a qualified signal into a constrained set of editorial directions.",
+  },
+  {
+    id: "critic",
+    name: "Critic",
+    responsibility: "Attack weak ideas",
+    support: "Challenges soft claims, generic framing, and angles that collapse under pressure.",
+  },
+  {
+    id: "strategist",
+    name: "Strategist",
+    responsibility: "Rank business value",
+    support: "Scores the survivors for business value and editorial readiness.",
+  },
 ];
 
 const SOURCE_OPTIONS: Array<{ value: SignalInput["source_type"]; label: string }> = [
@@ -75,6 +95,19 @@ function relativeDate(value: string): string {
 
 function statusLabel(status: string): string {
   return status.replaceAll("_", " ").toLowerCase();
+}
+
+function stageStatusLabel(status: StageStatus): string {
+  switch (status) {
+    case "active":
+      return "Running";
+    case "done":
+      return "Complete";
+    case "skipped":
+      return "Skipped";
+    default:
+      return "Queued";
+  }
 }
 
 export function SignalWorkspace() {
@@ -213,7 +246,10 @@ export function SignalWorkspace() {
   const progress = useMemo(() => {
     const complete = Object.values(stages).filter((stage) => stage === "done").length;
     const activeIndex = AGENTS.findIndex((agent) => stages[agent.id] === "active");
-    return activeIndex >= 0 ? (activeIndex / (AGENTS.length - 1)) * 100 : (complete / AGENTS.length) * 100;
+    if (activeIndex >= 0) {
+      return ((activeIndex + 0.45) / AGENTS.length) * 100;
+    }
+    return (complete / AGENTS.length) * 100;
   }, [stages]);
 
   function handleEvent(event: PipelineEvent) {
@@ -644,24 +680,78 @@ function PipelineTrace({
   models: Record<string, string>;
   running: boolean;
 }) {
+  const completedCount = AGENTS.filter((agent) => stages[agent.id] === "done").length;
+  const skippedCount = AGENTS.filter((agent) => stages[agent.id] === "skipped").length;
+  const activeAgent = AGENTS.find((agent) => stages[agent.id] === "active") ?? null;
+  const traceState = running
+    ? "running"
+    : skippedCount > 0
+      ? "stopped"
+      : completedCount === AGENTS.length
+        ? "complete"
+        : "idle";
+  const traceSummary = running
+    ? `${activeAgent?.name ?? "Pipeline"} is working now.`
+    : traceState === "stopped"
+      ? "Scout stopped the run before more model spend."
+      : traceState === "complete"
+        ? "All four specialist passes finished."
+        : "The orchestrator is waiting for a signal.";
+  const traceSupport = running
+    ? `${completedCount} of ${AGENTS.length} stages completed. Outputs unlock the next pass in sequence.`
+    : traceState === "stopped"
+      ? "Explorer, Critic, and Strategist stay dormant when the initial signal does not clear qualification."
+      : traceState === "complete"
+        ? "Surviving ideas below were already pressure-tested before scoring."
+        : "Scout can end the run after the first pass when the signal is too weak to justify more calls.";
+
   return (
-    <section className={`pipeline-trace ${running ? "is-running" : ""}`} aria-label="Pipeline progress">
+    <section className={`pipeline-trace is-${traceState}`} aria-label="Pipeline progress">
       <div className="trace-heading">
-        <span className="eyebrow">Pipeline</span>
-        <span>{running ? "Models are working in sequence" : "Bounded specialists, controlled by one orchestrator"}</span>
+        <div className="trace-heading-copy">
+          <span className="eyebrow">Pipeline</span>
+          <h2 className="trace-title">Four bounded passes, one editorial decision.</h2>
+          <p className="trace-description">The orchestrator advances one specialist at a time, validates each output, and stops early when the signal does not warrant more model spend.</p>
+        </div>
+        <div className={`trace-summary is-${traceState}`}>
+          <span className="trace-summary-state">{running ? "Running" : traceState === "complete" ? "Complete" : traceState === "stopped" ? "Stopped" : "Standby"}</span>
+          <strong>{traceSummary}</strong>
+          <span>{traceSupport}</span>
+        </div>
       </div>
-      <div className="trace-stages" style={{ "--trace-progress": `${progress}%` } as React.CSSProperties}>
-        <div className="trace-line"><span /></div>
-        {AGENTS.map((agent, index) => (
-          <div className={`trace-stage is-${stages[agent.id]}`} key={agent.id}>
-            <span className="stage-node">{stages[agent.id] === "done" ? "✓" : index + 1}</span>
-            <div>
-              <div className="stage-name">{agent.name}</div>
-              <div className="stage-detail">{stageNotes[agent.id] ?? agent.responsibility}</div>
-              {models[agent.id] && <div className="stage-model">{shortModel(models[agent.id])}</div>}
+      <div className="trace-board" style={{ "--trace-progress": `${progress}%` } as React.CSSProperties}>
+        <div className="trace-progress" aria-hidden="true"><span /></div>
+        <div className="trace-grid">
+          <div className="orchestrator-lane">
+            <span className="trace-board-label">Control</span>
+            <strong>Single orchestrator</strong>
+            <p>Owns sequencing, schema checks, score assembly, and the rule that Scout can halt the run before the later specialists activate.</p>
+            <div className="orchestrator-meta">
+              <span>Flow</span>
+              <strong>Scout → Explorer → Critic → Strategist</strong>
             </div>
           </div>
-        ))}
+
+          <ol className="trace-stages">
+            {AGENTS.map((agent, index) => (
+              <li className={`trace-stage is-${stages[agent.id]}`} key={agent.id}>
+                <div className="stage-topline">
+                  <span className="stage-index">{String(index + 1).padStart(2, "0")}</span>
+                  <span className={`stage-state is-${stages[agent.id]}`}>{stageStatusLabel(stages[agent.id])}</span>
+                </div>
+                <div className="stage-name">{agent.name}</div>
+                <div className="stage-role">{agent.responsibility}</div>
+                <p className="stage-detail">{stageNotes[agent.id] ?? agent.support}</p>
+                {models[agent.id] && (
+                  <div className="stage-model">
+                    <span>Model</span>
+                    <strong>{shortModel(models[agent.id])}</strong>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ol>
+        </div>
       </div>
     </section>
   );

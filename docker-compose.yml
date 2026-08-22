@@ -30,6 +30,7 @@ services:
       start_period: 10s
 
   app:
+    image: axelyn-signal-app:latest
     build:
       context: .
       dockerfile: Dockerfile
