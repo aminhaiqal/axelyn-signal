@@ -74,9 +74,13 @@ One-time VPS setup:
 ```bash
 sudo useradd --create-home --shell /bin/bash github-deploy
 sudo usermod --append --groups docker github-deploy
+deployment_password="$(openssl rand -base64 48)"
+printf 'github-deploy:%s\n' "$deployment_password" | sudo chpasswd
+unset deployment_password
+sudo passwd -S github-deploy
 ```
 
-Docker access is effectively root-level access to the VPS, so protect this account and allow only key-based SSH authentication. The VPS SSH port must be reachable from GitHub-hosted runners.
+On Debian, `useradd` creates a locked account by default, and OpenSSH rejects a locked account even when its public key is authorized. The random password above unlocks the account without recording a usable password; `passwd -S` must report `P`, not `L`. Confirm that `sudo sshd -T` reports `passwordauthentication no` before exposing the account. Docker access is effectively root-level access to the VPS, so protect this account and allow only key-based SSH authentication. The VPS SSH port must be reachable from GitHub-hosted runners.
 
 2. Create the release directory and production environment file:
 
