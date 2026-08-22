@@ -65,35 +65,63 @@ The Compose defaults cap the app at 1 CPU/1 GiB, PostgreSQL at 0.75 CPU/768 MiB,
 
 The workflow in `.github/workflows/ci-cd.yml` runs lint, tests, and a production build for every push and for pull requests into `main`. A validated commit is deployed automatically only when it is on `main`.
 
-Deployment runs on a self-hosted GitHub Actions runner inside the VPS. This keeps the production `.env` on the server, avoids storing application secrets in GitHub, and does not require opening SSH to GitHub-hosted runners. The deployment rebuilds the Compose application image, waits for the existing health checks, and restores the previous application image when a new release does not become healthy.
+Deployment runs from a temporary GitHub-hosted runner over SSH. It checks out the exact validated commit on the VPS, rebuilds the Compose application image, waits for the existing health checks, and restores the previous application image when a new release does not become healthy. The production `.env` remains on the VPS and is never copied into GitHub Actions.
 
 One-time VPS setup:
 
-1. Install Docker Engine with Docker Compose v2. Create a dedicated, non-root account such as `github-runner`, and grant it access to the Docker daemon. Docker access is effectively root-level access to the VPS, so only trusted maintainers should be able to change or merge repository code.
-2. Create the production environment file outside the runner workspace:
+1. Install Docker Engine and Docker Compose v2. Create a dedicated, non-root deployment account and grant it access to the Docker daemon:
 
 ```bash
-sudo install -d -m 0750 -o github-runner -g github-runner /opt/axelyn-signal
+sudo useradd --create-home --shell /bin/bash github-deploy
+sudo usermod --append --groups docker github-deploy
+```
+
+Docker access is effectively root-level access to the VPS, so protect this account and allow only key-based SSH authentication. The VPS SSH port must be reachable from GitHub-hosted runners.
+
+2. Create the release directory and production environment file:
+
+```bash
+sudo install -d -m 0750 -o github-deploy -g github-deploy /opt/axelyn-signal
+sudo install -d -m 0700 -o github-deploy -g github-deploy /opt/axelyn-signal/incoming
+sudo install -d -m 0750 -o github-deploy -g github-deploy /opt/axelyn-signal/releases
 sudo touch /opt/axelyn-signal/.env
-sudo chown github-runner:github-runner /opt/axelyn-signal/.env
+sudo chown github-deploy:github-deploy /opt/axelyn-signal/.env
 sudo chmod 0600 /opt/axelyn-signal/.env
 sudoedit /opt/axelyn-signal/.env
 ```
 
 Copy the settings from `.env.example` and replace at least `POSTGRES_PASSWORD`, `SETTINGS_ENCRYPTION_KEY`, `CLOUDFLARE_TUNNEL_TOKEN`, and `OPENROUTER_SITE_URL` with production values.
 
-3. In GitHub, open **Settings → Actions → Runners → New self-hosted runner**. Select the VPS operating system and architecture, then run GitHub's displayed download and configuration commands as the dedicated runner account. Add `--labels axelyn-signal` to the displayed `config.sh` command.
-4. From the installed runner directory, install and start its service:
+3. Generate a dedicated deployment key on a trusted workstation. Do not add a passphrase because the workflow is non-interactive:
 
 ```bash
-sudo ./svc.sh install github-runner
-sudo ./svc.sh start
-sudo ./svc.sh status
+ssh-keygen -t ed25519 -C axelyn-github-deploy -f axelyn-github-deploy -N ''
 ```
 
-5. Confirm that the runner appears online with the `axelyn-signal` label in GitHub. Merge the workflow into `main`, or run **CI and VPS deploy** manually from the Actions tab using the `main` branch.
+Using an existing VPS administrator session, put the single line from `axelyn-github-deploy.pub` into `/home/github-deploy/.ssh/authorized_keys` and set the directory/file permissions to `0700`/`0600`. Confirm that the key can log in and that the account can run `docker info` and `docker compose version` before continuing:
 
-The deployment starts the Cloudflare Tunnel profile by default. If the VPS intentionally does not use that profile, create a GitHub Actions repository variable named `AXELYN_COMPOSE_PROFILE` with the value `none`. The runner workspace is cleaned between deployments, so never put the production `.env` inside it.
+```bash
+ssh -i axelyn-github-deploy github-deploy@your-vps-host 'docker info && docker compose version'
+```
+
+4. From a trusted network, collect the VPS SSH host keys and verify their fingerprints against the host before trusting them:
+
+```bash
+ssh-keyscan -H -p 22 your-vps-host > axelyn-known-hosts
+ssh-keygen -lf axelyn-known-hosts
+```
+
+5. In GitHub, open **Settings → Secrets and variables → Actions** and add these production secrets:
+
+- `VPS_HOST`: the VPS hostname or IP address.
+- `VPS_PORT`: the SSH port, normally `22`.
+- `VPS_USER`: `github-deploy` or the dedicated account name.
+- `VPS_SSH_PRIVATE_KEY`: the complete contents of the private deployment key.
+- `VPS_SSH_KNOWN_HOSTS`: the complete, verified contents of `axelyn-known-hosts`.
+
+6. Merge the workflow into `main`, or run **CI and VPS deploy** manually from the Actions tab using the `main` branch. GitHub transfers an archive of the exact validated commit into a unique directory under `/opt/axelyn-signal/releases` and updates `/opt/axelyn-signal/current` only after the release becomes healthy. This also works if the repository is made private because the VPS does not clone from GitHub.
+
+The deployment starts the Cloudflare Tunnel profile by default. If the VPS intentionally does not use that profile, create a GitHub Actions repository variable named `AXELYN_COMPOSE_PROFILE` with the value `none`. Never commit either SSH key or the production `.env`.
 
 ## Protect it with Cloudflare Access
 
