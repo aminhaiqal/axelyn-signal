@@ -9,6 +9,7 @@ import type {
 } from "@/domain/schemas";
 import type { PipelineEvent } from "@/pipeline/events";
 import type { RecentRun, StoredRun } from "@/persistence/types";
+import type { BufferChannel, BufferKeyStatus } from "@/domain/buffer";
 import { DraftStudio } from "./draft-studio";
 import {
   ArrowUpRight,
@@ -126,19 +127,30 @@ export function SignalWorkspace() {
   const [models, setModels] = useState<Record<string, string>>({});
   const [operatorEmail, setOperatorEmail] = useState<string | null>(null);
   const [keyStatus, setKeyStatus] = useState<OpenRouterKeyStatus | null>(null);
+  const [bufferStatus, setBufferStatus] = useState<BufferKeyStatus | null>(null);
+  const [bufferChannels, setBufferChannels] = useState<BufferChannel[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsError, setSettingsError] = useState("");
   const [settingsMessage, setSettingsMessage] = useState("");
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
+  const [bufferKeyInput, setBufferKeyInput] = useState("");
+  const [showBufferKey, setShowBufferKey] = useState(false);
+  const [bufferLoading, setBufferLoading] = useState(false);
+  const [bufferError, setBufferError] = useState("");
+  const [bufferMessage, setBufferMessage] = useState("");
 
   const closeSettings = useCallback(() => {
     setSettingsOpen(false);
     setApiKeyInput("");
     setShowApiKey(false);
+    setBufferKeyInput("");
+    setShowBufferKey(false);
     setSettingsError("");
     setSettingsMessage("");
+    setBufferError("");
+    setBufferMessage("");
   }, []);
 
   const loadRuns = useCallback(async () => {
@@ -162,11 +174,13 @@ export function SignalWorkspace() {
       .then((data: {
         openrouter_configured: boolean;
         openrouter: OpenRouterKeyStatus | null;
+        buffer: BufferKeyStatus | null;
         models: Record<string, string>;
         operator_email: string | null;
       }) => {
         setApiConfigured(data.openrouter_configured);
         setKeyStatus(data.openrouter);
+        setBufferStatus(data.buffer);
         setModels(data.models);
         setOperatorEmail(data.operator_email);
       })
@@ -185,19 +199,37 @@ export function SignalWorkspace() {
   async function openSettings() {
     setSettingsOpen(true);
     setSettingsLoading(true);
+    setBufferLoading(true);
     setSettingsError("");
     setSettingsMessage("");
-    try {
-      const response = await fetch("/api/settings/openrouter", { cache: "no-store" });
-      const data = (await response.json()) as { openrouter?: OpenRouterKeyStatus; error?: string };
-      if (!response.ok || !data.openrouter) throw new Error(data.error ?? "Settings could not be loaded.");
-      setKeyStatus(data.openrouter);
-      setApiConfigured(data.openrouter.configured && data.openrouter.encryption_ready);
-    } catch (caught) {
-      setSettingsError(caught instanceof Error ? caught.message : "Settings could not be loaded.");
-    } finally {
-      setSettingsLoading(false);
-    }
+    setBufferError("");
+    setBufferMessage("");
+    await Promise.all([
+      fetch("/api/settings/openrouter", { cache: "no-store" })
+        .then(async (response) => {
+          const data = (await response.json()) as { openrouter?: OpenRouterKeyStatus; error?: string };
+          if (!response.ok || !data.openrouter) throw new Error(data.error ?? "OpenRouter settings could not be loaded.");
+          setKeyStatus(data.openrouter);
+          setApiConfigured(data.openrouter.configured && data.openrouter.encryption_ready);
+        })
+        .catch((caught) => setSettingsError(caught instanceof Error ? caught.message : "OpenRouter settings could not be loaded."))
+        .finally(() => setSettingsLoading(false)),
+      fetch("/api/settings/buffer", { cache: "no-store" })
+        .then(async (response) => {
+          const data = (await response.json()) as {
+            buffer?: BufferKeyStatus;
+            channels?: BufferChannel[];
+            connection_error?: string;
+            error?: string;
+          };
+          if (!response.ok || !data.buffer) throw new Error(data.error ?? "Buffer settings could not be loaded.");
+          setBufferStatus(data.buffer);
+          setBufferChannels(data.channels ?? []);
+          setBufferError(data.connection_error ?? "");
+        })
+        .catch((caught) => setBufferError(caught instanceof Error ? caught.message : "Buffer settings could not be loaded."))
+        .finally(() => setBufferLoading(false)),
+    ]);
   }
 
   async function saveApiKey(event: React.FormEvent<HTMLFormElement>) {
@@ -241,6 +273,60 @@ export function SignalWorkspace() {
       setSettingsError(caught instanceof Error ? caught.message : "The API key could not be removed.");
     } finally {
       setSettingsLoading(false);
+    }
+  }
+
+  async function saveBufferKey(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBufferLoading(true);
+    setBufferError("");
+    setBufferMessage("");
+    try {
+      const response = await fetch("/api/settings/buffer", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: bufferKeyInput }),
+      });
+      const data = (await response.json()) as {
+        buffer?: BufferKeyStatus;
+        channels?: BufferChannel[];
+        error?: string;
+      };
+      if (!response.ok || !data.buffer) throw new Error(data.error ?? "The Buffer connection could not be saved.");
+      setBufferStatus(data.buffer);
+      setBufferChannels(data.channels ?? []);
+      setBufferKeyInput("");
+      setShowBufferKey(false);
+      setBufferMessage("Buffer connected. Approved proofs can now be sent as drafts.");
+      window.dispatchEvent(new CustomEvent("axelyn:buffer-updated", {
+        detail: { buffer: data.buffer, channels: data.channels ?? [], connection_error: "" },
+      }));
+    } catch (caught) {
+      setBufferError(caught instanceof Error ? caught.message : "The Buffer connection could not be saved.");
+    } finally {
+      setBufferLoading(false);
+    }
+  }
+
+  async function removeBufferKey() {
+    if (!window.confirm("Disconnect Buffer? Existing Buffer drafts and delivery records will remain.")) return;
+    setBufferLoading(true);
+    setBufferError("");
+    setBufferMessage("");
+    try {
+      const response = await fetch("/api/settings/buffer", { method: "DELETE" });
+      const data = (await response.json()) as { buffer?: BufferKeyStatus; error?: string };
+      if (!response.ok || !data.buffer) throw new Error(data.error ?? "Buffer could not be disconnected.");
+      setBufferStatus(data.buffer);
+      setBufferChannels([]);
+      setBufferMessage("Buffer disconnected.");
+      window.dispatchEvent(new CustomEvent("axelyn:buffer-updated", {
+        detail: { buffer: data.buffer, channels: [], connection_error: "" },
+      }));
+    } catch (caught) {
+      setBufferError(caught instanceof Error ? caught.message : "Buffer could not be disconnected.");
+    } finally {
+      setBufferLoading(false);
     }
   }
 
@@ -548,6 +634,17 @@ export function SignalWorkspace() {
         setShowApiKey={setShowApiKey}
         models={models}
         operatorEmail={operatorEmail}
+        bufferStatus={bufferStatus}
+        bufferChannels={bufferChannels}
+        bufferLoading={bufferLoading}
+        bufferError={bufferError}
+        bufferMessage={bufferMessage}
+        bufferKey={bufferKeyInput}
+        setBufferKey={setBufferKeyInput}
+        showBufferKey={showBufferKey}
+        setShowBufferKey={setShowBufferKey}
+        onSaveBuffer={saveBufferKey}
+        onRemoveBuffer={() => void removeBufferKey()}
       />
     </div>
   );
@@ -568,6 +665,17 @@ function SettingsVault({
   setShowApiKey,
   models,
   operatorEmail,
+  bufferStatus,
+  bufferChannels,
+  bufferLoading,
+  bufferError,
+  bufferMessage,
+  bufferKey,
+  setBufferKey,
+  showBufferKey,
+  setShowBufferKey,
+  onSaveBuffer,
+  onRemoveBuffer,
 }: {
   open: boolean;
   onClose: () => void;
@@ -583,6 +691,17 @@ function SettingsVault({
   setShowApiKey: (value: boolean) => void;
   models: Record<string, string>;
   operatorEmail: string | null;
+  bufferStatus: BufferKeyStatus | null;
+  bufferChannels: BufferChannel[];
+  bufferLoading: boolean;
+  bufferError: string;
+  bufferMessage: string;
+  bufferKey: string;
+  setBufferKey: (value: string) => void;
+  showBufferKey: boolean;
+  setShowBufferKey: (value: boolean) => void;
+  onSaveBuffer: (event: React.FormEvent<HTMLFormElement>) => void;
+  onRemoveBuffer: () => void;
 }) {
   return (
     <div className={`settings-layer ${open ? "is-open" : ""}`} aria-hidden={!open} inert={!open}>
@@ -642,6 +761,64 @@ function SettingsVault({
             {error && <p className="vault-error" role="alert">{error}</p>}
             {message && <p className="vault-success" role="status">{message}</p>}
             <p className="encryption-note">The key is encrypted with AES-256-GCM before PostgreSQL storage. It is never returned to this browser after saving.</p>
+          </section>
+
+          <section className="vault-section buffer-vault-section">
+            <div className="vault-section-heading">
+              <div><span>Buffer delivery</span><p>Approved proofs are saved to Buffer as drafts only.</p></div>
+              <span className={`vault-status ${bufferStatus?.configured && bufferStatus.encryption_ready && !bufferError ? "is-ready" : ""}`}>
+                {bufferStatus?.configured && bufferStatus.encryption_ready && !bufferError ? "Connected" : "Setup needed"}
+              </span>
+            </div>
+
+            {bufferStatus?.configured && (
+              <div className="stored-key-row">
+                <div><span>Stored key</span><strong>{bufferStatus.display_hint}</strong></div>
+                <button type="button" onClick={onRemoveBuffer} disabled={bufferLoading}>Disconnect</button>
+              </div>
+            )}
+
+            <form className="key-form" onSubmit={onSaveBuffer}>
+              <label htmlFor="buffer-key">{bufferStatus?.configured ? "Replace API key" : "Buffer API key"}</label>
+              <div className="secret-input">
+                <input
+                  id="buffer-key"
+                  value={bufferKey}
+                  onChange={(event) => setBufferKey(event.target.value)}
+                  type={showBufferKey ? "text" : "password"}
+                  placeholder="Paste a rotated Buffer API key"
+                  autoComplete="off"
+                  spellCheck={false}
+                  minLength={20}
+                  maxLength={512}
+                  disabled={bufferLoading}
+                />
+                <button type="button" onClick={() => setShowBufferKey(!showBufferKey)} aria-label={showBufferKey ? "Hide Buffer API key" : "Show Buffer API key"}>
+                  <EyeIcon crossed={showBufferKey} />
+                </button>
+              </div>
+              <button className="save-key-button" type="submit" disabled={bufferLoading || bufferKey.trim().length < 20}>
+                {bufferLoading ? "Verifying…" : bufferStatus?.configured ? "Replace key" : "Connect Buffer"}
+              </button>
+            </form>
+
+            {bufferChannels.some((channel) => ["linkedin", "threads"].includes(channel.service)) && (
+              <div className="buffer-channel-roster">
+                <span>Available draft channels</span>
+                {bufferChannels.filter((channel) => ["linkedin", "threads"].includes(channel.service)).map((channel) => (
+                  <div key={channel.id}>
+                    <strong>{channel.name}</strong>
+                    <span>{channel.service} · {channel.organization_name}{channel.is_queue_paused ? " · queue paused" : ""}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!bufferStatus?.encryption_ready && (
+              <p className="vault-warning">Set <code>SETTINGS_ENCRYPTION_KEY</code> on the server before saving credentials.</p>
+            )}
+            {bufferError && <p className="vault-error" role="alert">{bufferError}</p>}
+            {bufferMessage && <p className="vault-success" role="status">{bufferMessage}</p>}
+            <p className="encryption-note">Signal verifies the key server-side, stores it with AES-256-GCM encryption, and never returns it to the browser.</p>
           </section>
 
           <section className="vault-section">

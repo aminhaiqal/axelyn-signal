@@ -117,6 +117,7 @@ class MemoryDraftRepository implements DraftRepository {
       created_at: new Date().toISOString(),
       approved_by: null,
       approved_at: null,
+      buffer_deliveries: [],
     };
     const view = this.session.drafts.find((draft) => draft.platform === platform);
     if (view) {

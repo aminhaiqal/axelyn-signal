@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { BufferChannel, BufferDelivery, BufferKeyStatus } from "@/domain/buffer";
 import type {
   DraftPlatform,
   DraftSession,
@@ -48,9 +49,35 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
   const [stageSummary, setStageSummary] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [working, setWorking] = useState(false);
-  const [action, setAction] = useState<"save" | "review" | "approve" | "copy" | null>(null);
+  const [action, setAction] = useState<"save" | "review" | "approve" | "copy" | "buffer" | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [bufferStatus, setBufferStatus] = useState<BufferKeyStatus | null>(null);
+  const [bufferChannels, setBufferChannels] = useState<BufferChannel[]>([]);
+  const [selectedChannels, setSelectedChannels] = useState<Partial<Record<DraftPlatform, string>>>({});
+  const [bufferLoading, setBufferLoading] = useState(false);
+  const [bufferError, setBufferError] = useState("");
+
+  const applyBufferConnection = useCallback((
+    status: BufferKeyStatus,
+    channels: BufferChannel[],
+    connectionError = "",
+  ) => {
+    setBufferStatus(status);
+    setBufferChannels(channels);
+    setBufferError(connectionError);
+    setSelectedChannels((current) => {
+      const next = { ...current };
+      for (const platform of ["LINKEDIN", "THREADS"] as const) {
+        const service = platform === "LINKEDIN" ? "linkedin" : "threads";
+        const available = channels.filter((channel) => channel.service === service);
+        if (!next[platform] || !available.some((channel) => channel.id === next[platform])) {
+          next[platform] = available[0]?.id;
+        }
+      }
+      return next;
+    });
+  }, []);
 
   const loadSessions = useCallback(async () => {
     setLoadingHistory(true);
@@ -78,6 +105,39 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
     }
   }, [brief.candidate_id, runId]);
 
+  const loadBufferConnection = useCallback(async () => {
+    setBufferLoading(true);
+    try {
+      const response = await fetch("/api/settings/buffer", { cache: "no-store" });
+      const data = (await response.json()) as {
+        buffer?: BufferKeyStatus;
+        channels?: BufferChannel[];
+        connection_error?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.buffer) throw new Error(data.error ?? "Buffer settings could not be loaded.");
+      const channels = data.channels ?? [];
+      applyBufferConnection(data.buffer, channels, data.connection_error ?? "");
+    } catch (caught) {
+      setBufferError(friendlyError(caught));
+    } finally {
+      setBufferLoading(false);
+    }
+  }, [applyBufferConnection]);
+
+  useEffect(() => {
+    const refresh = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        buffer: BufferKeyStatus;
+        channels: BufferChannel[];
+        connection_error?: string;
+      }>).detail;
+      if (detail) applyBufferConnection(detail.buffer, detail.channels, detail.connection_error ?? "");
+    };
+    window.addEventListener("axelyn:buffer-updated", refresh);
+    return () => window.removeEventListener("axelyn:buffer-updated", refresh);
+  }, [applyBufferConnection]);
+
   const platformView = session?.drafts.find((draft) => draft.platform === activePlatform) ?? null;
   const currentRevision = platformView?.current ?? null;
   const editorValue = currentRevision
@@ -88,6 +148,12 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
   const platformLimit = PLATFORM_LIMITS[activePlatform];
   const changed = Boolean(currentRevision && editorValue !== currentRevision.content);
   const overLimit = characterCount > platformLimit;
+  const bufferService = activePlatform === "LINKEDIN" ? "linkedin" : "threads";
+  const eligibleBufferChannels = bufferChannels.filter((channel) => channel.service === bufferService);
+  const selectedChannelId = selectedChannels[activePlatform] ?? "";
+  const selectedDelivery = currentRevision?.buffer_deliveries.find(
+    (delivery) => delivery.channel_id === selectedChannelId,
+  ) ?? null;
 
   const stageIndex = useMemo(() => {
     if (stage === "drafter") return 1;
@@ -117,7 +183,10 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
   function toggleStudio() {
     const nextOpen = !studioOpen;
     setStudioOpen(nextOpen);
-    if (nextOpen && sessions.length === 0 && !loadingHistory) void loadSessions();
+    if (nextOpen) {
+      if (sessions.length === 0 && !loadingHistory) void loadSessions();
+      void loadBufferConnection();
+    }
   }
 
   async function generateDrafts() {
@@ -232,6 +301,7 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
   }
 
   async function copyDraft() {
+    if (action) return;
     try {
       await navigator.clipboard.writeText(editorValue);
       setCopied(true);
@@ -242,6 +312,34 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
       }, 1600);
     } catch {
       setError("The browser could not copy this draft. Select the text and copy it manually.");
+    }
+  }
+
+  async function sendToBuffer() {
+    if (!session || !currentRevision || !selectedChannelId || changed || action) return;
+    setAction("buffer");
+    setError("");
+    setBufferError("");
+    try {
+      const response = await fetch(`/api/drafts/${session.id}/buffer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ platform: activePlatform, channel_id: selectedChannelId }),
+      });
+      const data = (await response.json()) as {
+        delivery?: BufferDelivery;
+        session?: DraftSession;
+        error?: string;
+      };
+      if (!response.ok || !data.session || !data.delivery) {
+        throw new Error(data.error ?? "The proof could not be sent to Buffer.");
+      }
+      setSession(data.session);
+      setSessions((current) => current.map((item) => item.id === data.session?.id ? data.session : item));
+    } catch (caught) {
+      setBufferError(friendlyError(caught));
+    } finally {
+      setAction(null);
     }
   }
 
@@ -416,7 +514,7 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
                     <button type="button" onClick={() => void checkAgain()} disabled={changed || Boolean(action)} title={changed ? "Save this revision before review." : undefined}>
                       {action === "review" ? "Reviewing…" : "Check again"}
                     </button>
-                    <button type="button" onClick={() => void copyDraft()} disabled={!editorValue || action === "copy"}>
+                    <button type="button" onClick={() => void copyDraft()} disabled={!editorValue || Boolean(action)}>
                       {copied ? "Copied" : "Copy post"}
                     </button>
                     <button
@@ -427,6 +525,82 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
                     >
                       {currentRevision.approved_at ? "Approved" : action === "approve" ? "Approving…" : "Approve proof"}
                     </button>
+                  </div>
+
+                  <div className="buffer-delivery-docket">
+                    <div className="buffer-docket-heading">
+                      <span>Buffer handoff</span>
+                      <strong className={selectedDelivery?.status === "DELIVERED" ? "is-delivered" : ""}>
+                        {selectedDelivery?.status === "DELIVERED" ? "Draft received" : "Draft only"}
+                      </strong>
+                    </div>
+                    {bufferLoading && bufferStatus === null ? (
+                      <p>Checking the Buffer connection…</p>
+                    ) : !bufferStatus?.configured ? (
+                      <p>Connect Buffer in Settings to deliver approved proofs without copying and pasting.</p>
+                    ) : eligibleBufferChannels.length === 0 ? (
+                      <p>No connected {platformLabel(activePlatform)} channel is available in Buffer.</p>
+                    ) : (
+                      <div className="buffer-destination-row">
+                        <label>
+                          <span>Destination</span>
+                          <select
+                            value={selectedChannelId}
+                            onChange={(event) => setSelectedChannels((current) => ({
+                              ...current,
+                              [activePlatform]: event.target.value,
+                            }))}
+                            disabled={bufferLoading || action === "buffer"}
+                          >
+                            {eligibleBufferChannels.map((channel) => (
+                              <option value={channel.id} key={channel.id}>
+                                {channel.name} · {channel.organization_name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => void sendToBuffer()}
+                          disabled={
+                            bufferLoading ||
+                            Boolean(action) ||
+                            changed ||
+                            overLimit ||
+                            !currentRevision.approved_at ||
+                            !selectedChannelId ||
+                            Boolean(selectedDelivery)
+                          }
+                        >
+                          {action === "buffer"
+                            ? "Sending…"
+                            : selectedDelivery?.status === "DELIVERED"
+                              ? "In Buffer"
+                              : selectedDelivery
+                                ? "Check Buffer"
+                                : "Send draft to Buffer"}
+                        </button>
+                      </div>
+                    )}
+                    {!currentRevision.approved_at && bufferStatus?.configured && (
+                      <small>Approve this exact revision before sending it.</small>
+                    )}
+                    {currentRevision.buffer_deliveries.length > 0 && (
+                      <ol className="buffer-delivery-history">
+                        {currentRevision.buffer_deliveries.map((delivery) => (
+                          <li key={delivery.id}>
+                            <span
+                              className={`buffer-delivery-state is-${delivery.status.toLowerCase()}`}
+                              title={delivery.error ?? delivery.status.toLowerCase()}
+                            />
+                            <strong>{delivery.channel_name}</strong>
+                            <span>{delivery.status.toLowerCase()}</span>
+                            {delivery.buffer_post_id && <code>{delivery.buffer_post_id}</code>}
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                    {bufferError && <p className="buffer-docket-error" role="alert">{bufferError}</p>}
                   </div>
                 </div>
 

@@ -189,6 +189,22 @@ async function migrate(client: PoolClient): Promise<void> {
         UNIQUE (drafting_session_id, platform, revision)
       );
 
+      CREATE TABLE IF NOT EXISTS buffer_deliveries (
+        id UUID PRIMARY KEY,
+        draft_revision_id UUID NOT NULL REFERENCES social_draft_revisions(id) ON DELETE CASCADE,
+        platform TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        channel_name TEXT NOT NULL,
+        channel_service TEXT NOT NULL,
+        status TEXT NOT NULL,
+        buffer_post_id TEXT,
+        error TEXT,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        UNIQUE (draft_revision_id, channel_id)
+      );
+
       CREATE TABLE IF NOT EXISTS app_secrets (
         name TEXT PRIMARY KEY,
         ciphertext TEXT NOT NULL,
@@ -209,9 +225,12 @@ async function migrate(client: PoolClient): Promise<void> {
         ON social_draft_revisions(drafting_session_id, platform, revision DESC);
       CREATE INDEX IF NOT EXISTS idx_draft_agent_runs_session
         ON draft_agent_runs(drafting_session_id);
+      CREATE INDEX IF NOT EXISTS idx_buffer_deliveries_revision
+        ON buffer_deliveries(draft_revision_id, created_at DESC);
 
       INSERT INTO schema_migrations (version) VALUES (1) ON CONFLICT (version) DO NOTHING;
       INSERT INTO schema_migrations (version) VALUES (2) ON CONFLICT (version) DO NOTHING;
+      INSERT INTO schema_migrations (version) VALUES (3) ON CONFLICT (version) DO NOTHING;
     `);
     await client.query("COMMIT");
   } catch (error) {

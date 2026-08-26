@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { BufferDelivery } from "./buffer";
 import type { FinalBrief, SignalInput, Usage } from "./schemas";
 
 export const DraftPlatformSchema = z.enum(["LINKEDIN", "THREADS"]);
@@ -88,6 +89,7 @@ export interface DraftRevision {
   created_at: string;
   approved_by: string | null;
   approved_at: string | null;
+  buffer_deliveries: BufferDelivery[];
 }
 
 export interface DraftPlatformView {

@@ -24,10 +24,13 @@ Strategist ── component scores + penalties + editorial briefs
 Drafter → Reviewer → one repair pass only when required
     │ versioned publication proofs + reviewer findings
     ▼
-Human edit, re-check, approval, and copy
+Human edit, re-check, and approval
+    │ copy manually or hand the approved revision to Buffer
+    ▼
+Buffer draft (never scheduled or published by Axelyn Signal)
 ```
 
-Both pipelines stream real stage events, so the interface reflects actual orchestrator state rather than simulating progress. Draft Studio never publishes to a social network; approval and copy remain explicit operator actions.
+Both pipelines stream real stage events, so the interface reflects actual orchestrator state rather than simulating progress. Draft Studio never publishes to a social network. An operator may copy an approved proof or explicitly send that immutable revision to Buffer, where it is saved as a draft for a separate scheduling or publishing decision.
 
 ## Run with Docker Compose
 
@@ -50,7 +53,9 @@ Start PostgreSQL and the application:
 docker compose up --build
 ```
 
-Open [http://localhost:3000](http://localhost:3000), choose **Settings**, and save an OpenRouter API key. The key is encrypted with AES-256-GCM before it is stored in PostgreSQL and is never returned to the browser after saving.
+Open [http://localhost:3000](http://localhost:3000), choose **Settings**, and save an OpenRouter API key. To enable delivery, create a Buffer API key under Buffer's **Settings → API**, rotate any key that has been exposed, then connect the replacement key in Axelyn Signal's **Settings → Buffer delivery** section. Both keys are encrypted with AES-256-GCM before storage in PostgreSQL and are never returned to the browser after saving.
+
+After generating a Draft Studio proof, edit it as needed, run the reviewer again, and approve the current revision. The **Buffer handoff** docket then lets you select a matching LinkedIn or Threads channel and choose **Send draft to Buffer**. The integration deliberately sets Buffer's `saveToDraft` flag: it does not schedule, queue for publication, or publish content. Each revision/channel handoff is recorded and de-duplicated so a retry cannot silently create a second draft.
 
 Useful operations:
 
@@ -167,7 +172,7 @@ npm run dev
 
 `DATABASE_URL` in `.env.local` must point to PostgreSQL. Schema migrations run automatically and are guarded so concurrent application starts are safe.
 
-Open [http://localhost:3000](http://localhost:3000), then add the OpenRouter key through **Settings**.
+Open [http://localhost:3000](http://localhost:3000), then add the OpenRouter key and optional Buffer API key through **Settings**.
 
 Useful checks:
 
@@ -204,9 +209,12 @@ OpenRouter's returned `usage.cost` is stored when present. Per-token prices in `
 - OpenRouter gateway: `src/llm/openrouter.ts`
 - Pipeline state machine: `src/pipeline/orchestrator.ts`
 - Drafting state machine: `src/drafting/orchestrator.ts`
+- Buffer GraphQL gateway: `src/integrations/buffer/client.ts`
+- Approved-proof Buffer handoff: `src/integrations/buffer/export.ts`
 - PostgreSQL connection and migrations: `src/persistence/postgres.ts`
 - PostgreSQL repository: `src/persistence/postgres-repository.ts`
 - Drafting repository: `src/persistence/postgres-draft-repository.ts`
+- Buffer delivery ledger: `src/persistence/postgres-buffer-repository.ts`
 - Encrypted credential store: `src/security/`
 - Streaming API: `src/app/api/pipeline/route.ts`
 - Operator UI: `src/components/signal-workspace.tsx`
@@ -225,12 +233,13 @@ PostgreSQL stores:
 - ranked final briefs;
 - drafting sessions, per-model drafting audit rows, and immutable social draft revisions;
 - reviewer verdicts/findings and explicit operator approval metadata;
-- the encrypted OpenRouter credential and its non-sensitive display hint.
+- Buffer delivery attempts and remote draft identifiers for idempotency and audit;
+- the encrypted OpenRouter and Buffer credentials and their non-sensitive display hints.
 
-There is no vector database, agent memory, autonomous loop, social integration, or automatic publishing path in V1.
+There is no vector database, agent memory, autonomous loop, or automatic publishing path in V1. Buffer is a one-way, operator-triggered draft handoff only.
 
 ## Scoring and human control
 
 Strategist supplies six component scores. The orchestrator calculates the final score with the required weights: strategic fit 25%, audience relevance 20%, credibility 20%, conversation potential 15%, originality 10%, and memorability 10%. It then subtracts explicit penalties for genericness, hype, weak evidence, repetition, and weak Axelyn connection. The coefficients live in `src/domain/scoring.ts` for calibration.
 
-The ranked briefs remain editorial decision aids. Draft Studio can produce publication-ready base writing from one of those briefs, but it treats the brief and supplied evidence as authoritative, enforces platform limits in code, stores every revision, and requires a human operator to approve and copy the final proof. Only that operator decides what is published.
+The ranked briefs remain editorial decision aids. Draft Studio can produce publication-ready base writing from one of those briefs, but it treats the brief and supplied evidence as authoritative, enforces platform limits in code, stores every revision, and requires human approval before copy or Buffer handoff. Buffer receives a draft, never a publish instruction; only the operator decides what is scheduled or published.

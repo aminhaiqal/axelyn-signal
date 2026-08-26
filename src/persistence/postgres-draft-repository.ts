@@ -19,6 +19,7 @@ import { FinalBriefSchema, type SignalInput, type Usage } from "@/domain/schemas
 import { ensureDatabase, getPool } from "./postgres";
 import type { DraftRepository } from "./draft-types";
 import type { AgentRunCompletion } from "./types";
+import { mapBufferDelivery } from "./postgres-buffer-repository";
 
 type DatabaseClient = Pool | PoolClient;
 
@@ -46,7 +47,10 @@ async function transaction<T>(work: (client: PoolClient) => Promise<T>): Promise
   }
 }
 
-function mapRevision(row: Record<string, unknown>): DraftRevision {
+function mapRevision(
+  row: Record<string, unknown>,
+  deliveries: ReturnType<typeof mapBufferDelivery>[] = [],
+): DraftRevision {
   return {
     id: String(row.id),
     session_id: String(row.drafting_session_id),
@@ -61,6 +65,7 @@ function mapRevision(row: Record<string, unknown>): DraftRevision {
     created_at: iso(row.created_at),
     approved_by: row.approved_by ? String(row.approved_by) : null,
     approved_at: nullableIso(row.approved_at),
+    buffer_deliveries: deliveries,
   };
 }
 
@@ -77,7 +82,23 @@ async function readSession(id: string, client: DatabaseClient): Promise<DraftSes
     WHERE drafting_session_id = $1
     ORDER BY platform ASC, revision ASC
   `, [id]);
-  const revisions = revisionResult.rows.map((revision) => mapRevision(revision));
+  const deliveryResult = await client.query(`
+    SELECT d.* FROM buffer_deliveries d
+    JOIN social_draft_revisions r ON r.id = d.draft_revision_id
+    WHERE r.drafting_session_id = $1
+    ORDER BY d.created_at ASC
+  `, [id]);
+  const deliveriesByRevision = new Map<string, ReturnType<typeof mapBufferDelivery>[]>();
+  for (const deliveryRow of deliveryResult.rows) {
+    const delivery = mapBufferDelivery(deliveryRow as Record<string, unknown>);
+    const current = deliveriesByRevision.get(delivery.draft_revision_id) ?? [];
+    current.push(delivery);
+    deliveriesByRevision.set(delivery.draft_revision_id, current);
+  }
+  const revisions = revisionResult.rows.map((revision) => {
+    const row = revision as Record<string, unknown>;
+    return mapRevision(row, deliveriesByRevision.get(String(row.id)) ?? []);
+  });
   const requestedPlatforms = (row.requested_platforms as unknown[]).map((platform) =>
     DraftPlatformSchema.parse(platform)
   );
