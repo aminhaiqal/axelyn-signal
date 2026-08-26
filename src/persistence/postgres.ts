@@ -128,6 +128,67 @@ async function migrate(client: PoolClient): Promise<void> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS drafting_sessions (
+        id UUID PRIMARY KEY,
+        pipeline_run_id UUID NOT NULL REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+        candidate_id UUID NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+        requested_platforms JSONB NOT NULL,
+        evidence TEXT NOT NULL DEFAULT '',
+        guidance TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL,
+        models_json JSONB NOT NULL,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        actual_cost DOUBLE PRECISION,
+        estimated_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+        error TEXT,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+      );
+
+      CREATE TABLE IF NOT EXISTS draft_agent_runs (
+        id UUID PRIMARY KEY,
+        drafting_session_id UUID NOT NULL REFERENCES drafting_sessions(id) ON DELETE CASCADE,
+        agent TEXT NOT NULL,
+        model TEXT NOT NULL,
+        provider TEXT,
+        generation_id TEXT,
+        status TEXT NOT NULL,
+        input_json JSONB NOT NULL,
+        output_json JSONB,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_tokens INTEGER NOT NULL DEFAULT 0,
+        actual_cost DOUBLE PRECISION,
+        estimated_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+        duration_ms INTEGER,
+        error TEXT,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+      );
+
+      CREATE TABLE IF NOT EXISTS social_draft_revisions (
+        id UUID PRIMARY KEY,
+        drafting_session_id UUID NOT NULL REFERENCES drafting_sessions(id) ON DELETE CASCADE,
+        platform TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        content TEXT NOT NULL,
+        character_count INTEGER NOT NULL,
+        review_state TEXT NOT NULL,
+        review_json JSONB,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        approved_by TEXT,
+        approved_at TIMESTAMPTZ,
+        UNIQUE (drafting_session_id, platform, revision)
+      );
+
       CREATE TABLE IF NOT EXISTS app_secrets (
         name TEXT PRIMARY KEY,
         ciphertext TEXT NOT NULL,
@@ -142,8 +203,15 @@ async function migrate(client: PoolClient): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_candidates_pipeline ON candidates(pipeline_run_id);
       CREATE INDEX IF NOT EXISTS idx_briefs_pipeline ON editorial_briefs(pipeline_run_id, rank);
       CREATE INDEX IF NOT EXISTS idx_runs_created ON pipeline_runs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_draft_sessions_brief
+        ON drafting_sessions(pipeline_run_id, candidate_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_draft_revisions_session
+        ON social_draft_revisions(drafting_session_id, platform, revision DESC);
+      CREATE INDEX IF NOT EXISTS idx_draft_agent_runs_session
+        ON draft_agent_runs(drafting_session_id);
 
       INSERT INTO schema_migrations (version) VALUES (1) ON CONFLICT (version) DO NOTHING;
+      INSERT INTO schema_migrations (version) VALUES (2) ON CONFLICT (version) DO NOTHING;
     `);
     await client.query("COMMIT");
   } catch (error) {

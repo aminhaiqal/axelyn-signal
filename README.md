@@ -1,6 +1,6 @@
 # Axelyn Signal
 
-Axelyn Signal turns one raw observation into a small, ranked set of editorial briefs. Four bounded model calls are controlled by application code; the agents never chat with each other, keep hidden memory, or publish content.
+Axelyn Signal turns one raw observation into a small, ranked set of editorial briefs. An optional Draft Studio then turns a selected brief into LinkedIn, Threads, or both as separate platform-native publication proofs. Every model call is bounded by application code; the agents never chat with each other, keep hidden memory, or publish content.
 
 ```text
 Manual signal
@@ -19,9 +19,15 @@ Strategist ── component scores + penalties + editorial briefs
     │ deterministic weighted scoring in application code
     ▼
 3–5 ranked briefs for human review
+    │ operator selects a brief and platform(s)
+    ▼
+Drafter → Reviewer → one repair pass only when required
+    │ versioned publication proofs + reviewer findings
+    ▼
+Human edit, re-check, approval, and copy
 ```
 
-The web response streams real stage events, so the interface reflects the actual orchestrator state rather than simulating progress.
+Both pipelines stream real stage events, so the interface reflects actual orchestrator state rather than simulating progress. Draft Studio never publishes to a social network; approval and copy remain explicit operator actions.
 
 ## Run with Docker Compose
 
@@ -180,9 +186,11 @@ SCOUT_MODEL=google/gemini-2.5-flash-lite
 EXPLORER_MODEL=google/gemini-2.5-flash
 CRITIC_MODEL=deepseek/deepseek-v3.2
 STRATEGIST_MODEL=anthropic/claude-haiku-4.5
+DRAFTER_MODEL=anthropic/claude-sonnet-5
+DRAFT_REVIEWER_MODEL=openai/gpt-5.6-terra
 ```
 
-The defaults deliberately use an inexpensive Scout, a mid-tier creative Explorer, a different model family for Critic, and a balanced Strategist. Model slugs are configuration, not architectural dependencies. Temperatures and maximum output-token budgets are also independently configurable with the `*_TEMPERATURE` and `*_MAX_OUTPUT_TOKENS` variables in `.env.example`.
+The defaults deliberately use an inexpensive Scout, a mid-tier creative Explorer, a different model family for Critic, and a balanced Strategist. Draft Studio separates prose generation (Claude Sonnet 5) from adversarial review (GPT-5.6 Terra). For a lower-cost deployment, either drafting role can be changed to `google/gemini-3.7-flash`. Model slugs are configuration, not architectural dependencies. Pipeline temperatures, drafting reasoning effort/verbosity, and maximum output-token budgets are independently configurable in `.env.example`.
 
 OpenRouter's returned `usage.cost` is stored when present. Per-token prices in `.env.example` provide a fallback estimate and should be refreshed when model pricing changes. The OpenRouter API key is the only model credential managed through the V1 web interface; model selection remains deployment configuration so a credential change cannot silently alter editorial behavior.
 
@@ -195,11 +203,14 @@ OpenRouter's returned `usage.cost` is stored when present. Per-token prices in `
 - Separate prompts: `src/prompts/`
 - OpenRouter gateway: `src/llm/openrouter.ts`
 - Pipeline state machine: `src/pipeline/orchestrator.ts`
+- Drafting state machine: `src/drafting/orchestrator.ts`
 - PostgreSQL connection and migrations: `src/persistence/postgres.ts`
 - PostgreSQL repository: `src/persistence/postgres-repository.ts`
+- Drafting repository: `src/persistence/postgres-draft-repository.ts`
 - Encrypted credential store: `src/security/`
 - Streaming API: `src/app/api/pipeline/route.ts`
 - Operator UI: `src/components/signal-workspace.tsx`
+- Publication proof UI: `src/components/draft-studio.tsx`
 
 The V1 Axelyn context is intentionally conservative because no detailed company proof library was supplied. Review `src/config/axelyn-context.ts` before production and replace the working positioning, credible-experience areas, and exclusions with verified company language.
 
@@ -212,12 +223,14 @@ PostgreSQL stores:
 - Scout output, Explorer candidates, Critic evaluations, and Strategist evaluations;
 - model, provider, generation ID, token usage, duration, actual cost, and estimated cost per call;
 - ranked final briefs;
+- drafting sessions, per-model drafting audit rows, and immutable social draft revisions;
+- reviewer verdicts/findings and explicit operator approval metadata;
 - the encrypted OpenRouter credential and its non-sensitive display hint.
 
-There is no vector database, agent memory, autonomous loop, social integration, or publishing path in V1.
+There is no vector database, agent memory, autonomous loop, social integration, or automatic publishing path in V1.
 
 ## Scoring and human control
 
 Strategist supplies six component scores. The orchestrator calculates the final score with the required weights: strategic fit 25%, audience relevance 20%, credibility 20%, conversation potential 15%, originality 10%, and memorability 10%. It then subtracts explicit penalties for genericness, hype, weak evidence, repetition, and weak Axelyn connection. The coefficients live in `src/domain/scoring.ts` for calibration.
 
-The final output remains an editorial decision aid containing claims, reader value, Axelyn's right to speak, counterarguments, evidence needs, and platform direction—not finished posts. Only a human operator decides what is published.
+The ranked briefs remain editorial decision aids. Draft Studio can produce publication-ready base writing from one of those briefs, but it treats the brief and supplied evidence as authoritative, enforces platform limits in code, stores every revision, and requires a human operator to approve and copy the final proof. Only that operator decides what is published.

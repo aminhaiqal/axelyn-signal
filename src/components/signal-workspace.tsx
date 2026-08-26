@@ -9,6 +9,7 @@ import type {
 } from "@/domain/schemas";
 import type { PipelineEvent } from "@/pipeline/events";
 import type { RecentRun, StoredRun } from "@/persistence/types";
+import { DraftStudio } from "./draft-studio";
 import {
   ArrowUpRight,
   Chevron,
@@ -255,7 +256,7 @@ export function SignalWorkspace() {
   function handleEvent(event: PipelineEvent) {
     if (event.type === "run_started") {
       setActiveRunId(event.run_id);
-      setModels(event.models);
+      setModels((current) => ({ ...current, ...event.models }));
     }
     if (event.type === "stage_started") {
       setStages((current) => ({ ...current, [event.stage]: "active" }));
@@ -337,7 +338,7 @@ export function SignalWorkspace() {
       setContent(run.content);
       setContext(run.context);
       setActiveRunId(run.id);
-      setModels(run.models);
+      setModels((current) => ({ ...current, ...run.models }));
       setError(run.error ?? "");
       if (run.scout) {
         setResult({
@@ -526,7 +527,7 @@ export function SignalWorkspace() {
           {!result && status === "idle" && (
             <section className="empty-state" aria-label="How the pipeline works">
               <span className="eyebrow">Expected output</span>
-              <p>Three to five ranked editorial briefs—claims, audiences, counterarguments, evidence needs, and platform direction. Never full posts.</p>
+              <p>Three to five ranked editorial briefs first. Open a qualified brief when you are ready to commission platform-native writing.</p>
             </section>
           )}
         </div>
@@ -651,6 +652,16 @@ function SettingsVault({
               {AGENTS.map((agent) => (
                 <div key={agent.id}><span>{agent.name}</span><strong>{models[agent.id] ?? "Not configured"}</strong></div>
               ))}
+            </div>
+          </section>
+
+          <section className="vault-section">
+            <div className="vault-section-heading">
+              <div><span>Drafting models</span><p>Writing and review remain separate editorial responsibilities.</p></div>
+            </div>
+            <div className="model-roster">
+              <div><span>Drafter</span><strong>{models.drafter ?? "Not configured"}</strong></div>
+              <div><span>Reviewer</span><strong>{models.reviewer ?? "Not configured"}</strong></div>
             </div>
           </section>
 
@@ -791,14 +802,16 @@ function Results({ result }: { result: PipelineResult }) {
         <p className="no-briefs">Critic or Strategist rejected every candidate. That is a valid result—refine the raw signal instead of publishing a weak idea.</p>
       ) : (
         <div className="brief-list">
-          {result.briefs.map((brief) => <BriefItem brief={brief} key={brief.candidate_id} />)}
+          {result.briefs.map((brief) => (
+            <BriefItem brief={brief} runId={result.run_id} key={brief.candidate_id} />
+          ))}
         </div>
       )}
     </section>
   );
 }
 
-function BriefItem({ brief }: { brief: FinalBrief }) {
+function BriefItem({ brief, runId }: { brief: FinalBrief; runId: string }) {
   return (
     <details className="brief-item">
       <summary>
@@ -835,6 +848,7 @@ function BriefItem({ brief }: { brief: FinalBrief }) {
           <BriefField label="LinkedIn direction" value={brief.linkedin_angle} />
           <BriefField label="Threads direction" value={brief.threads_angle} />
         </div>
+        <DraftStudio runId={runId} brief={brief} />
       </div>
     </details>
   );

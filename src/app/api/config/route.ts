@@ -1,4 +1,4 @@
-import { getAgentConfig } from "@/config/agents";
+import { getAgentConfig, getDraftAgentConfig } from "@/config/agents";
 import { OpenRouterKeyStore } from "@/security/openrouter-key-store";
 
 export const runtime = "nodejs";
@@ -10,7 +10,8 @@ function response(data: unknown): Response {
 
 export async function GET(request: Request): Promise<Response> {
   const models = Object.fromEntries(
-    Object.entries(getAgentConfig()).map(([agent, config]) => [agent, config.model]),
+    Object.entries({ ...getAgentConfig(), ...getDraftAgentConfig() })
+      .map(([agent, config]) => [agent, config.model]),
   );
   try {
     const openrouter = await new OpenRouterKeyStore().status();

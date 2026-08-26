@@ -62,7 +62,13 @@ export class OpenRouterGateway implements LlmGateway {
         },
         body: JSON.stringify({
           model: request.config.model,
-          temperature: request.config.temperature,
+          ...(request.config.temperature === undefined
+            ? {}
+            : { temperature: request.config.temperature }),
+          ...(request.config.reasoningEffort
+            ? { reasoning: { effort: request.config.reasoningEffort, exclude: true } }
+            : {}),
+          ...(request.config.verbosity ? { verbosity: request.config.verbosity } : {}),
           max_tokens: request.config.maxOutputTokens,
           messages: [
             { role: "system", content: request.system },
