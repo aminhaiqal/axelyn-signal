@@ -8,6 +8,8 @@ interface OpenRouterResponse {
   choices?: Array<{
     message?: { content?: string | Array<{ type?: string; text?: string }> };
     error?: { message?: string };
+    finish_reason?: string | null;
+    native_finish_reason?: string | null;
   }>;
   usage?: {
     prompt_tokens?: number;
@@ -18,6 +20,19 @@ interface OpenRouterResponse {
     prompt_tokens_details?: { cached_tokens?: number };
   };
   error?: { message?: string };
+}
+
+type FetchLike = typeof fetch;
+
+interface OutputFailureDetails {
+  schema: string;
+  requestedModel: string;
+  returnedModel: string;
+  provider: string | null;
+  generationId: string | null;
+  finishReason: string | null;
+  nativeFinishReason: string | null;
+  responseLength: number;
 }
 
 function extractContent(response: OpenRouterResponse): string {
@@ -39,7 +54,26 @@ export class OpenRouterGateway implements LlmGateway {
   constructor(
     private readonly apiKey: string,
     private readonly endpoint = "https://openrouter.ai/api/v1/chat/completions",
+    private readonly fetcher: FetchLike = fetch,
   ) {}
+
+  private outputFailureDetails<T>(
+    request: CompletionRequest<T>,
+    payload: OpenRouterResponse,
+    content: string,
+  ): OutputFailureDetails {
+    const choice = payload.choices?.[0];
+    return {
+      schema: request.schemaName,
+      requestedModel: request.config.model,
+      returnedModel: payload.model ?? request.config.model,
+      provider: payload.provider ?? null,
+      generationId: payload.id ?? null,
+      finishReason: choice?.finish_reason ?? null,
+      nativeFinishReason: choice?.native_finish_reason ?? null,
+      responseLength: content.length,
+    };
+  }
 
   async complete<T>(request: CompletionRequest<T>): Promise<CompletionResult<T>> {
     const jsonSchema = z.toJSONSchema(request.schema, {
@@ -51,7 +85,7 @@ export class OpenRouterGateway implements LlmGateway {
     const timeout = setTimeout(() => controller.abort(), 120_000);
 
     try {
-      const response = await fetch(this.endpoint, {
+      const response = await this.fetcher(this.endpoint, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
@@ -70,6 +104,9 @@ export class OpenRouterGateway implements LlmGateway {
             : {}),
           ...(request.config.verbosity ? { verbosity: request.config.verbosity } : {}),
           max_tokens: request.config.maxOutputTokens,
+          stream: false,
+          provider: { require_parameters: true },
+          plugins: [{ id: "response-healing" }],
           messages: [
             { role: "system", content: request.system },
             { role: "user", content: request.user },
@@ -100,13 +137,33 @@ export class OpenRouterGateway implements LlmGateway {
       let parsed: unknown;
       try {
         parsed = parseJson(content);
-      } catch {
-        throw new Error("The selected model returned invalid JSON.");
+      } catch (error) {
+        const details = this.outputFailureDetails(request, payload, content);
+        console.error("OpenRouter structured output was not parseable", {
+          ...details,
+          parseError: error instanceof Error ? error.message : "Unknown JSON parse error",
+        });
+        const finishReasons = [details.finishReason, details.nativeFinishReason]
+          .filter((reason): reason is string => Boolean(reason))
+          .map((reason) => reason.toLowerCase());
+        if (finishReasons.includes("length") || finishReasons.includes("max_tokens")) {
+          throw new Error(
+            "The selected model reached its output limit before completing the structured response. Increase this stage's output-token limit or shorten its input.",
+          );
+        }
+        throw new Error(
+          "The selected model returned malformed JSON after response healing. Retry the run.",
+        );
       }
 
       const validated = request.schema.safeParse(parsed);
       if (!validated.success) {
         const issue = validated.error.issues[0];
+        console.error("OpenRouter structured output failed schema validation", {
+          ...this.outputFailureDetails(request, payload, content),
+          issuePath: issue.path.join(".") || "root",
+          issueMessage: issue.message,
+        });
         throw new Error(`The selected model returned an invalid ${request.schemaName} payload at ${issue.path.join(".") || "root"}: ${issue.message}`);
       }
 
