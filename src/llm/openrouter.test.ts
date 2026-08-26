@@ -47,7 +47,7 @@ function completion(content: string, finishReason = "stop") {
 }
 
 describe("OpenRouterGateway structured output", () => {
-  it("requires structured-output providers and enables response healing", async () => {
+  it("enables response healing without blocking provider routing", async () => {
     let body: Record<string, unknown> = {};
     const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
       body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -61,7 +61,7 @@ describe("OpenRouterGateway structured output", () => {
     ).complete(request);
 
     expect(result.data).toEqual({ message: "Ready" });
-    expect(body.provider).toEqual({ require_parameters: true });
+    expect(body).not.toHaveProperty("provider");
     expect(body.plugins).toEqual([{ id: "response-healing" }]);
     expect(body.stream).toBe(false);
     expect(body.response_format).toMatchObject({
