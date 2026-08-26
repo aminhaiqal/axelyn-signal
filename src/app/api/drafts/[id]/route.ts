@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DraftPlatformSchema } from "@/domain/drafts";
+import { DraftPlatformSchema, type DraftSession } from "@/domain/drafts";
 import { PostgresDraftRepository } from "@/persistence/postgres-draft-repository";
 
 export const runtime = "nodejs";
@@ -16,6 +16,11 @@ const PatchSchema = z.discriminatedUnion("action", [
     content: z.string().trim().min(40, "Add a little more substance before saving.").max(12000),
   }),
   z.object({ action: z.literal("approve"), platform: DraftPlatformSchema }),
+  z.object({
+    action: z.literal("delete"),
+    platform: DraftPlatformSchema,
+    revision_id: z.string().uuid(),
+  }),
 ]);
 
 function response(data: unknown, init?: ResponseInit): Response {
@@ -48,11 +53,18 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
   const repository = new PostgresDraftRepository();
   const operator = request.headers.get("cf-access-authenticated-user-email");
   try {
-    const session = parsed.data.action === "save"
-      ? await repository.saveOperatorRevision(
+    let session: DraftSession | null;
+    if (parsed.data.action === "save") {
+      session = await repository.saveOperatorRevision(
         id, parsed.data.platform, parsed.data.content, operator,
-      )
-      : await repository.approveCurrentRevision(id, parsed.data.platform, operator);
+      );
+    } else if (parsed.data.action === "delete") {
+      session = await repository.deleteRevision(
+        id, parsed.data.platform, parsed.data.revision_id, operator,
+      );
+    } else {
+      session = await repository.approveCurrentRevision(id, parsed.data.platform, operator);
+    }
     if (!session) return response({ error: "Drafting session not found." }, { status: 404 });
     return response({ session });
   } catch (error) {

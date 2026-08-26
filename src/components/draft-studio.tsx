@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BufferChannel, BufferDelivery, BufferKeyStatus } from "@/domain/buffer";
 import type {
   DraftPlatform,
+  DraftRevision,
   DraftSession,
 } from "@/domain/drafts";
 import type { FinalBrief } from "@/domain/schemas";
@@ -47,11 +48,13 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
   const [selectedRevisionIds, setSelectedRevisionIds] = useState<Partial<Record<DraftPlatform, string>>>({});
   const [editorValues, setEditorValues] = useState<Record<string, string>>({});
   const [repairInstructions, setRepairInstructions] = useState("");
+  const repairInputRef = useRef<HTMLTextAreaElement>(null);
   const [stage, setStage] = useState<DraftStage>("idle");
   const [stageSummary, setStageSummary] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [working, setWorking] = useState(false);
-  const [action, setAction] = useState<"save" | "repair" | "review" | "approve" | "copy" | "buffer" | null>(null);
+  const [action, setAction] = useState<"save" | "repair" | "delete" | "review" | "approve" | "copy" | "buffer" | null>(null);
+  const [deletingRevisionId, setDeletingRevisionId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [bufferStatus, setBufferStatus] = useState<BufferKeyStatus | null>(null);
@@ -205,6 +208,14 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
     }
   }
 
+  function reuseRepairPrompt(prompt: string) {
+    setRepairInstructions(prompt);
+    window.requestAnimationFrame(() => {
+      repairInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      repairInputRef.current?.focus();
+    });
+  }
+
   function toggleStudio() {
     const nextOpen = !studioOpen;
     setStudioOpen(nextOpen);
@@ -329,6 +340,49 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
     } catch (caught) {
       setError(friendlyError(caught));
     } finally {
+      setAction(null);
+    }
+  }
+
+  async function deleteRevision(revision: DraftRevision) {
+    if (!session || !platformView || platformView.revisions.length <= 1 || action) return;
+    if (revision.id === currentRevision?.id && changed) {
+      setError("Save or discard the unsaved edits before removing this revision.");
+      return;
+    }
+    if (revision.buffer_deliveries.length > 0) {
+      setError("A revision with a Buffer handoff cannot be removed.");
+      return;
+    }
+    const approvalNote = revision.approved_at ? " This revision is approved." : "";
+    const confirmed = window.confirm(
+      `Remove revision R${revision.revision} from the ledger?${approvalNote} You cannot restore it from Draft Studio.`,
+    );
+    if (!confirmed) return;
+
+    setAction("delete");
+    setDeletingRevisionId(revision.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/drafts/${session.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "delete",
+          platform: activePlatform,
+          revision_id: revision.id,
+        }),
+      });
+      const data = (await response.json()) as { session?: DraftSession; error?: string };
+      if (!response.ok || !data.session) {
+        throw new Error(data.error ?? "The revision could not be removed.");
+      }
+      adoptUpdatedSession(data.session, activePlatform);
+      setRepairInstructions("");
+    } catch (caught) {
+      setError(friendlyError(caught));
+    } finally {
+      setDeletingRevisionId(null);
       setAction(null);
     }
   }
@@ -540,6 +594,23 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
                     {currentRevision.approved_at && <strong>Approved</strong>}
                     {!isLatestRevision && <em>Viewing history</em>}
                   </div>
+                  {currentRevision.repair_prompt && (
+                    <details className="revision-repair-brief">
+                      <summary>
+                        <span>Repair instruction</span>
+                        <small>Stored with R{currentRevision.revision}</small>
+                      </summary>
+                      <div>
+                        <p>{currentRevision.repair_prompt}</p>
+                        <button
+                          type="button"
+                          onClick={() => reuseRepairPrompt(currentRevision.repair_prompt ?? "")}
+                        >
+                          Use again
+                        </button>
+                      </div>
+                    </details>
+                  )}
                   <textarea
                     className="proof-editor"
                     value={editorValue}
@@ -602,6 +673,7 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
                     </div>
                     <div className="proof-repair-box">
                       <textarea
+                        ref={repairInputRef}
                         value={repairInstructions}
                         onChange={(event) => setRepairInstructions(event.target.value)}
                         onKeyDown={(event) => {
@@ -749,34 +821,58 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
               <div className="revision-ledger">
                 <span>Revision ledger</span>
                 <ol>
-                  {platformView?.revisions.map((revision) => (
-                    <li
-                      className={[
-                        revision.id === currentRevision.id ? "is-selected" : "",
-                        revision.id === latestRevision?.id ? "is-current" : "",
-                      ].filter(Boolean).join(" ")}
-                      key={revision.id}
-                    >
-                      <button
-                        type="button"
-                        aria-pressed={revision.id === currentRevision.id}
-                        onClick={() => {
-                          setSelectedRevisionIds((current) => ({
-                            ...current,
-                            [activePlatform]: revision.id,
-                          }));
-                          setRepairInstructions("");
-                          setError("");
-                        }}
+                  {platformView?.revisions.map((revision) => {
+                    const isOnlyRevision = platformView.revisions.length <= 1;
+                    const hasBufferHandoff = revision.buffer_deliveries.length > 0;
+                    const hasUnsavedEdits = revision.id === currentRevision.id && changed;
+                    const deleteTitle = isOnlyRevision
+                      ? "Keep at least one revision for this platform."
+                      : hasBufferHandoff
+                        ? "A revision with a Buffer handoff cannot be removed."
+                        : hasUnsavedEdits
+                          ? "Save or discard the unsaved edits before removing this revision."
+                          : `Remove revision ${revision.revision}`;
+                    return (
+                      <li
+                        className={[
+                          revision.id === currentRevision.id ? "is-selected" : "",
+                          revision.id === latestRevision?.id ? "is-current" : "",
+                        ].filter(Boolean).join(" ")}
+                        key={revision.id}
                       >
-                        <strong>R{revision.revision}</strong>
-                        <span>{revision.source.toLowerCase()}</span>
-                        <time>{new Date(revision.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
-                        {revision.id === latestRevision?.id && <i>latest</i>}
-                        {revision.approved_at && <b>approved</b>}
-                      </button>
-                    </li>
-                  ))}
+                        <button
+                          className="revision-select"
+                          type="button"
+                          aria-pressed={revision.id === currentRevision.id}
+                          onClick={() => {
+                            setSelectedRevisionIds((current) => ({
+                              ...current,
+                              [activePlatform]: revision.id,
+                            }));
+                            setRepairInstructions("");
+                            setError("");
+                          }}
+                        >
+                          <strong>R{revision.revision}</strong>
+                          <span>{revision.source.toLowerCase()}</span>
+                          <time>{new Date(revision.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+                          {revision.repair_prompt && <i>prompt</i>}
+                          {revision.id === latestRevision?.id && <i>latest</i>}
+                          {revision.approved_at && <b>approved</b>}
+                        </button>
+                        <button
+                          className="revision-delete"
+                          type="button"
+                          aria-label={`Remove revision ${revision.revision}`}
+                          title={deleteTitle}
+                          onClick={() => void deleteRevision(revision)}
+                          disabled={isOnlyRevision || hasBufferHandoff || hasUnsavedEdits || Boolean(action)}
+                        >
+                          {deletingRevisionId === revision.id ? "…" : "×"}
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ol>
               </div>
             </div>

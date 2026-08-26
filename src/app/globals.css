@@ -1709,6 +1709,79 @@ summary:focus-visible {
   font-style: normal;
 }
 
+.revision-repair-brief {
+  margin-top: 13px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.revision-repair-brief summary {
+  min-height: 35px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 8px;
+  font-weight: 780;
+  letter-spacing: 0.08em;
+  list-style: none;
+  text-transform: uppercase;
+}
+
+.revision-repair-brief summary::-webkit-details-marker {
+  display: none;
+}
+
+.revision-repair-brief summary::after {
+  content: "+";
+  color: var(--cobalt);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.revision-repair-brief[open] summary::after {
+  content: "−";
+}
+
+.revision-repair-brief summary small {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.revision-repair-brief > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 18px;
+  padding: 2px 0 13px;
+  animation: revision-focus 180ms ease-out both;
+}
+
+.revision-repair-brief p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 9px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.revision-repair-brief button {
+  padding: 5px 0;
+  color: var(--cobalt);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .proof-editor {
   width: 100%;
   min-height: 370px;
@@ -2181,10 +2254,10 @@ summary:focus-visible {
 }
 
 .revision-ledger li {
-  display: block;
+  display: flex;
 }
 
-.revision-ledger li button {
+.revision-ledger .revision-select {
   min-height: 29px;
   display: flex;
   align-items: center;
@@ -2199,19 +2272,52 @@ summary:focus-visible {
   transition: color 150ms ease, border-color 150ms ease, background 150ms ease;
 }
 
-.revision-ledger li button:hover {
+.revision-ledger .revision-select:hover {
   color: var(--ink);
   border-color: var(--ink);
 }
 
-.revision-ledger li.is-selected button {
+.revision-ledger li.is-selected .revision-select {
   color: var(--ink);
   border-color: var(--ink);
   background: var(--white);
 }
 
-.revision-ledger li.is-current:not(.is-selected) button {
+.revision-ledger li.is-current:not(.is-selected) .revision-select {
   border-color: rgba(49, 89, 245, 0.48);
+}
+
+.revision-delete {
+  width: 25px;
+  min-height: 29px;
+  display: grid;
+  place-items: center;
+  margin-left: -1px;
+  padding: 0;
+  color: #a16a70;
+  background: transparent;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  font-size: 13px;
+  opacity: 0.25;
+  transition: color 150ms ease, border-color 150ms ease, opacity 150ms ease;
+}
+
+.revision-ledger li:hover .revision-delete,
+.revision-ledger li.is-selected .revision-delete,
+.revision-delete:focus-visible {
+  opacity: 1;
+}
+
+.revision-delete:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.revision-delete:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.15;
 }
 
 .revision-ledger li strong,
@@ -2782,6 +2888,8 @@ summary:focus-visible {
   .proof-sheet { grid-template-columns: 1fr; }
   .proof-copy-column { padding: 20px 16px; border-right: 0; border-bottom: 1px solid var(--line-dark); }
   .proof-editor { min-height: 320px; font-size: 13px; }
+  .revision-repair-brief > div { grid-template-columns: 1fr; gap: 8px; }
+  .revision-repair-brief button { justify-self: start; }
   .proof-repair-box { grid-template-columns: 1fr; }
   .proof-repair-box > button { min-height: 40px; border-top: 1px solid var(--line-dark); border-left: 0; }
   .buffer-destination-row { grid-template-columns: 1fr; align-items: stretch; }
@@ -2790,6 +2898,7 @@ summary:focus-visible {
   .buffer-delivery-history code { display: none; }
   .review-margin { padding: 20px 16px; }
   .revision-ledger { grid-template-columns: 1fr; gap: 10px; }
+  .revision-delete { opacity: 0.7; }
   .vault-header { height: 92px; padding: 0 20px; }
   .vault-scroll { padding: 0 20px 40px; }
   .key-form { grid-template-columns: 1fr; }

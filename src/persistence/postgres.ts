@@ -179,6 +179,7 @@ async function migrate(client: PoolClient): Promise<void> {
         revision INTEGER NOT NULL,
         source TEXT NOT NULL,
         content TEXT NOT NULL,
+        repair_prompt TEXT,
         character_count INTEGER NOT NULL,
         review_state TEXT NOT NULL,
         review_json JSONB,
@@ -186,8 +187,34 @@ async function migrate(client: PoolClient): Promise<void> {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         approved_by TEXT,
         approved_at TIMESTAMPTZ,
+        deleted_by TEXT,
+        deleted_at TIMESTAMPTZ,
         UNIQUE (drafting_session_id, platform, revision)
       );
+
+      ALTER TABLE social_draft_revisions
+        ADD COLUMN IF NOT EXISTS repair_prompt TEXT;
+      ALTER TABLE social_draft_revisions
+        ADD COLUMN IF NOT EXISTS deleted_by TEXT;
+      ALTER TABLE social_draft_revisions
+        ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+      UPDATE social_draft_revisions AS revision
+      SET repair_prompt = agent_run.input_json #>> '{request,instructions}'
+      FROM draft_agent_runs AS agent_run
+      WHERE revision.drafting_session_id = agent_run.drafting_session_id
+        AND revision.source = 'REPAIR'
+        AND revision.repair_prompt IS NULL
+        AND NULLIF(agent_run.input_json #>> '{request,instructions}', '') IS NOT NULL
+        AND agent_run.input_json #>> '{request,platform}' = revision.platform
+        AND EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(
+            COALESCE(agent_run.output_json -> 'drafts', '[]'::jsonb)
+          ) AS generated_draft
+          WHERE generated_draft ->> 'platform' = revision.platform
+            AND generated_draft ->> 'content' = revision.content
+        );
 
       CREATE TABLE IF NOT EXISTS buffer_deliveries (
         id UUID PRIMARY KEY,
@@ -231,6 +258,7 @@ async function migrate(client: PoolClient): Promise<void> {
       INSERT INTO schema_migrations (version) VALUES (1) ON CONFLICT (version) DO NOTHING;
       INSERT INTO schema_migrations (version) VALUES (2) ON CONFLICT (version) DO NOTHING;
       INSERT INTO schema_migrations (version) VALUES (3) ON CONFLICT (version) DO NOTHING;
+      INSERT INTO schema_migrations (version) VALUES (4) ON CONFLICT (version) DO NOTHING;
     `);
     await client.query("COMMIT");
   } catch (error) {

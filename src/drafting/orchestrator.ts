@@ -385,6 +385,7 @@ export async function repairDraftRevision(
       sessionId,
       request.platform,
       repairedDraft.content,
+      request.instructions,
       createdBy,
     );
     if (!saved) throw new Error("Drafting session not found.");

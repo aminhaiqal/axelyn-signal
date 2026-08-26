@@ -88,6 +88,7 @@ export interface DraftRevision {
   revision: number;
   source: DraftSource;
   content: string;
+  repair_prompt: string | null;
   character_count: number;
   review_state: DraftReviewState;
   review: PlatformReview | null;

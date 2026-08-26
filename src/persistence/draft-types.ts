@@ -67,7 +67,14 @@ export interface DraftRepository {
     sessionId: string,
     platform: DraftPlatform,
     content: string,
+    repairPrompt: string,
     createdBy: string | null,
+  ): Promise<DraftSession | null>;
+  deleteRevision(
+    sessionId: string,
+    platform: DraftPlatform,
+    revisionId: string,
+    deletedBy: string | null,
   ): Promise<DraftSession | null>;
   approveCurrentRevision(
     sessionId: string,

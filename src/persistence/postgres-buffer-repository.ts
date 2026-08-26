@@ -67,7 +67,7 @@ export class PostgresBufferDeliveryRepository implements BufferDeliveryRepositor
       const revisionResult = await client.query(`
         SELECT id, content, character_count, approved_at
         FROM social_draft_revisions
-        WHERE drafting_session_id = $1 AND platform = $2
+        WHERE drafting_session_id = $1 AND platform = $2 AND deleted_at IS NULL
         ORDER BY revision DESC
         LIMIT 1
       `, [sessionId, platform]);

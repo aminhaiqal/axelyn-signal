@@ -110,6 +110,7 @@ class MemoryDraftRepository implements DraftRepository {
       revision,
       source: revisionSource,
       content,
+      repair_prompt: null,
       character_count: Array.from(content).length,
       review_state: state,
       review,
@@ -170,6 +171,7 @@ class MemoryDraftRepository implements DraftRepository {
     sessionId: string,
     platform: DraftPlatform,
     content: string,
+    repairPrompt: string,
     createdBy: string | null,
   ): Promise<DraftSession | null> {
     const revisions = this.session?.drafts.find((draft) => draft.platform === platform)?.revisions ?? [];
@@ -184,6 +186,20 @@ class MemoryDraftRepository implements DraftRepository {
       null,
       createdBy,
     );
+    const current = this.session?.drafts.find((draft) => draft.platform === platform)?.current;
+    if (current) current.repair_prompt = repairPrompt;
+    return this.session;
+  }
+  async deleteRevision(
+    _sessionId: string,
+    platform: DraftPlatform,
+    revisionId: string,
+  ): Promise<DraftSession | null> {
+    const view = this.session?.drafts.find((draft) => draft.platform === platform);
+    if (!view || view.revisions.length <= 1) return this.session;
+    view.revisions = view.revisions.filter((revision) => revision.id !== revisionId);
+    const current = view.revisions.at(-1);
+    if (current) view.current = current;
     return this.session;
   }
   async approveCurrentRevision(): Promise<DraftSession | null> { return this.session; }
@@ -344,6 +360,7 @@ describe("runDrafting", () => {
     expect(result.drafts[0].current).toMatchObject({
       revision: 3,
       source: "REPAIR",
+      repair_prompt: "Make the opening more direct and soften the final claim.",
       review_state: "UNCHECKED",
       created_by: "editor@example.com",
     });

@@ -58,6 +58,7 @@ function mapRevision(
     revision: Number(row.revision),
     source: row.source as DraftSource,
     content: String(row.content),
+    repair_prompt: row.repair_prompt ? String(row.repair_prompt) : null,
     character_count: Number(row.character_count),
     review_state: row.review_state as DraftReviewState,
     review: (row.review_json as PlatformReview | null) ?? null,
@@ -79,13 +80,13 @@ async function readSession(id: string, client: DatabaseClient): Promise<DraftSes
 
   const revisionResult = await client.query(`
     SELECT * FROM social_draft_revisions
-    WHERE drafting_session_id = $1
+    WHERE drafting_session_id = $1 AND deleted_at IS NULL
     ORDER BY platform ASC, revision ASC
   `, [id]);
   const deliveryResult = await client.query(`
     SELECT d.* FROM buffer_deliveries d
     JOIN social_draft_revisions r ON r.id = d.draft_revision_id
-    WHERE r.drafting_session_id = $1
+    WHERE r.drafting_session_id = $1 AND r.deleted_at IS NULL
     ORDER BY d.created_at ASC
   `, [id]);
   const deliveriesByRevision = new Map<string, ReturnType<typeof mapBufferDelivery>[]>();
@@ -138,6 +139,7 @@ async function appendUncheckedRevision(
   platform: DraftPlatform,
   source: Extract<DraftSource, "OPERATOR" | "REPAIR">,
   content: string,
+  repairPrompt: string | null,
   createdBy: string | null,
 ): Promise<boolean> {
   return transaction(async (client) => {
@@ -162,11 +164,11 @@ async function appendUncheckedRevision(
     await client.query(`
       INSERT INTO social_draft_revisions (
         id, drafting_session_id, platform, revision, source, content,
-        character_count, review_state, created_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'UNCHECKED', $8)
+        repair_prompt, character_count, review_state, created_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'UNCHECKED', $9)
     `, [
       randomUUID(), sessionId, platform, nextRevision, source, content,
-      countDraftCharacters(content), createdBy,
+      repairPrompt, countDraftCharacters(content), createdBy,
     ]);
     await client.query(`
       UPDATE drafting_sessions
@@ -174,7 +176,7 @@ async function appendUncheckedRevision(
         SELECT 1 FROM (
           SELECT DISTINCT ON (platform) platform, review_state
           FROM social_draft_revisions
-          WHERE drafting_session_id = $1
+          WHERE drafting_session_id = $1 AND deleted_at IS NULL
           ORDER BY platform, revision DESC
         ) latest
         WHERE latest.review_state = 'NEEDS_INPUT'
@@ -325,6 +327,7 @@ export class PostgresDraftRepository implements DraftRepository {
       UPDATE social_draft_revisions
       SET review_state = $1, review_json = $2::jsonb
       WHERE drafting_session_id = $3 AND platform = $4 AND revision = $5
+        AND deleted_at IS NULL
     `, [reviewState, JSON.stringify(review), sessionId, platform, revision]);
   }
 
@@ -408,7 +411,7 @@ export class PostgresDraftRepository implements DraftRepository {
     createdBy: string | null,
   ): Promise<DraftSession | null> {
     const saved = await appendUncheckedRevision(
-      sessionId, platform, "OPERATOR", content, createdBy,
+      sessionId, platform, "OPERATOR", content, null, createdBy,
     );
     return saved ? this.getSession(sessionId) : null;
   }
@@ -417,12 +420,78 @@ export class PostgresDraftRepository implements DraftRepository {
     sessionId: string,
     platform: DraftPlatform,
     content: string,
+    repairPrompt: string,
     createdBy: string | null,
   ): Promise<DraftSession | null> {
     const saved = await appendUncheckedRevision(
-      sessionId, platform, "REPAIR", content, createdBy,
+      sessionId, platform, "REPAIR", content, repairPrompt, createdBy,
     );
     return saved ? this.getSession(sessionId) : null;
+  }
+
+  async deleteRevision(
+    sessionId: string,
+    platform: DraftPlatform,
+    revisionId: string,
+    deletedBy: string | null,
+  ): Promise<DraftSession | null> {
+    const deleted = await transaction(async (client) => {
+      const sessionResult = await client.query(
+        "SELECT id FROM drafting_sessions WHERE id = $1 FOR UPDATE",
+        [sessionId],
+      );
+      if (!sessionResult.rows[0]) return false;
+
+      const revisionResult = await client.query(`
+        SELECT id, revision
+        FROM social_draft_revisions
+        WHERE id = $1 AND drafting_session_id = $2 AND platform = $3
+          AND deleted_at IS NULL
+        FOR UPDATE
+      `, [revisionId, sessionId, platform]);
+      const revision = revisionResult.rows[0] as Record<string, unknown> | undefined;
+      if (!revision) return false;
+
+      const countResult = await client.query(`
+        SELECT COUNT(*) AS count
+        FROM social_draft_revisions
+        WHERE drafting_session_id = $1 AND platform = $2 AND deleted_at IS NULL
+      `, [sessionId, platform]);
+      if (Number(countResult.rows[0].count) <= 1) {
+        throw new Error("Keep at least one revision for each platform.");
+      }
+
+      const deliveryResult = await client.query(`
+        SELECT EXISTS (
+          SELECT 1 FROM buffer_deliveries WHERE draft_revision_id = $1
+        ) AS has_delivery
+      `, [revisionId]);
+      if (Boolean(deliveryResult.rows[0].has_delivery)) {
+        throw new Error("A revision with a Buffer handoff cannot be removed.");
+      }
+
+      await client.query(`
+        UPDATE social_draft_revisions
+        SET deleted_by = $1, deleted_at = NOW()
+        WHERE id = $2
+      `, [deletedBy, revisionId]);
+      await client.query(`
+        UPDATE drafting_sessions
+        SET status = CASE WHEN EXISTS (
+          SELECT 1 FROM (
+            SELECT DISTINCT ON (platform) platform, review_state
+            FROM social_draft_revisions
+            WHERE drafting_session_id = $1 AND deleted_at IS NULL
+            ORDER BY platform, revision DESC
+          ) latest
+          WHERE latest.review_state = 'NEEDS_INPUT'
+        ) THEN 'NEEDS_INPUT' ELSE 'READY_FOR_REVIEW' END,
+        error = NULL, completed_at = NOW()
+        WHERE id = $1
+      `, [sessionId]);
+      return true;
+    });
+    return deleted ? this.getSession(sessionId) : null;
   }
 
   async approveCurrentRevision(
@@ -434,7 +503,7 @@ export class PostgresDraftRepository implements DraftRepository {
       const revisionResult = await client.query(`
         SELECT id, character_count
         FROM social_draft_revisions
-        WHERE drafting_session_id = $1 AND platform = $2
+        WHERE drafting_session_id = $1 AND platform = $2 AND deleted_at IS NULL
         ORDER BY revision DESC
         LIMIT 1
         FOR UPDATE
