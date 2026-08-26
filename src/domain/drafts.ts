@@ -27,6 +27,12 @@ export const DraftRequestSchema = z.object({
   guidance: z.string().trim().max(2000).optional().default(""),
 });
 
+export const DraftRepairRequestSchema = z.object({
+  platform: DraftPlatformSchema,
+  revision: z.number().int().positive(),
+  instructions: z.string().trim().min(3, "Describe the change you want Drafter to make.").max(2000),
+});
+
 export const WriterDraftSchema = z.object({
   platform: DraftPlatformSchema,
   content: z.string().trim().min(40).max(12000),
@@ -129,6 +135,7 @@ export type DraftSource = z.infer<typeof DraftSourceSchema>;
 export type DraftReviewState = z.infer<typeof DraftReviewStateSchema>;
 export type DraftSessionStatus = z.infer<typeof DraftSessionStatusSchema>;
 export type DraftRequest = z.infer<typeof DraftRequestSchema>;
+export type DraftRepairRequest = z.infer<typeof DraftRepairRequestSchema>;
 export type WriterDraft = z.infer<typeof WriterDraftSchema>;
 export type WriterOutput = z.infer<typeof WriterOutputSchema>;
 export type DraftReviewVerdict = z.infer<typeof DraftReviewVerdictSchema>;

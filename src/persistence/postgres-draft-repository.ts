@@ -133,6 +133,59 @@ async function readSession(id: string, client: DatabaseClient): Promise<DraftSes
   };
 }
 
+async function appendUncheckedRevision(
+  sessionId: string,
+  platform: DraftPlatform,
+  source: Extract<DraftSource, "OPERATOR" | "REPAIR">,
+  content: string,
+  createdBy: string | null,
+): Promise<boolean> {
+  return transaction(async (client) => {
+    const sessionResult = await client.query(`
+      SELECT requested_platforms FROM drafting_sessions WHERE id = $1 FOR UPDATE
+    `, [sessionId]);
+    const sessionRow = sessionResult.rows[0] as Record<string, unknown> | undefined;
+    if (!sessionRow) return false;
+    const requested = (sessionRow.requested_platforms as unknown[]).map((value) =>
+      DraftPlatformSchema.parse(value)
+    );
+    if (!requested.includes(platform)) {
+      throw new Error(`${platform} was not requested for this drafting session.`);
+    }
+
+    const revisionResult = await client.query(`
+      SELECT COALESCE(MAX(revision), 0) + 1 AS next_revision
+      FROM social_draft_revisions
+      WHERE drafting_session_id = $1 AND platform = $2
+    `, [sessionId, platform]);
+    const nextRevision = Number(revisionResult.rows[0].next_revision);
+    await client.query(`
+      INSERT INTO social_draft_revisions (
+        id, drafting_session_id, platform, revision, source, content,
+        character_count, review_state, created_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'UNCHECKED', $8)
+    `, [
+      randomUUID(), sessionId, platform, nextRevision, source, content,
+      countDraftCharacters(content), createdBy,
+    ]);
+    await client.query(`
+      UPDATE drafting_sessions
+      SET status = CASE WHEN EXISTS (
+        SELECT 1 FROM (
+          SELECT DISTINCT ON (platform) platform, review_state
+          FROM social_draft_revisions
+          WHERE drafting_session_id = $1
+          ORDER BY platform, revision DESC
+        ) latest
+        WHERE latest.review_state = 'NEEDS_INPUT'
+      ) THEN 'NEEDS_INPUT' ELSE 'READY_FOR_REVIEW' END,
+      error = NULL, completed_at = NOW()
+      WHERE id = $1
+    `, [sessionId]);
+    return true;
+  });
+}
+
 export class PostgresDraftRepository implements DraftRepository {
   async getBriefContext(runId: string, candidateId: string): Promise<DraftSourceContext | null> {
     await ensureDatabase();
@@ -354,50 +407,21 @@ export class PostgresDraftRepository implements DraftRepository {
     content: string,
     createdBy: string | null,
   ): Promise<DraftSession | null> {
-    const saved = await transaction(async (client) => {
-      const sessionResult = await client.query(`
-        SELECT requested_platforms FROM drafting_sessions WHERE id = $1 FOR UPDATE
-      `, [sessionId]);
-      const sessionRow = sessionResult.rows[0] as Record<string, unknown> | undefined;
-      if (!sessionRow) return false;
-      const requested = (sessionRow.requested_platforms as unknown[]).map((value) =>
-        DraftPlatformSchema.parse(value)
-      );
-      if (!requested.includes(platform)) {
-        throw new Error(`${platform} was not requested for this drafting session.`);
-      }
+    const saved = await appendUncheckedRevision(
+      sessionId, platform, "OPERATOR", content, createdBy,
+    );
+    return saved ? this.getSession(sessionId) : null;
+  }
 
-      const revisionResult = await client.query(`
-        SELECT COALESCE(MAX(revision), 0) + 1 AS next_revision
-        FROM social_draft_revisions
-        WHERE drafting_session_id = $1 AND platform = $2
-      `, [sessionId, platform]);
-      const nextRevision = Number(revisionResult.rows[0].next_revision);
-      await client.query(`
-        INSERT INTO social_draft_revisions (
-          id, drafting_session_id, platform, revision, source, content,
-          character_count, review_state, created_by
-        ) VALUES ($1, $2, $3, $4, 'OPERATOR', $5, $6, 'UNCHECKED', $7)
-      `, [
-        randomUUID(), sessionId, platform, nextRevision, content,
-        countDraftCharacters(content), createdBy,
-      ]);
-      await client.query(`
-        UPDATE drafting_sessions
-        SET status = CASE WHEN EXISTS (
-          SELECT 1 FROM (
-            SELECT DISTINCT ON (platform) platform, review_state
-            FROM social_draft_revisions
-            WHERE drafting_session_id = $1
-            ORDER BY platform, revision DESC
-          ) latest
-          WHERE latest.review_state = 'NEEDS_INPUT'
-        ) THEN 'NEEDS_INPUT' ELSE 'READY_FOR_REVIEW' END,
-        error = NULL, completed_at = NOW()
-        WHERE id = $1
-      `, [sessionId]);
-      return true;
-    });
+  async saveRepairRevision(
+    sessionId: string,
+    platform: DraftPlatform,
+    content: string,
+    createdBy: string | null,
+  ): Promise<DraftSession | null> {
+    const saved = await appendUncheckedRevision(
+      sessionId, platform, "REPAIR", content, createdBy,
+    );
     return saved ? this.getSession(sessionId) : null;
   }
 

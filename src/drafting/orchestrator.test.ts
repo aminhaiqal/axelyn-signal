@@ -15,7 +15,7 @@ import type { Usage } from "@/domain/schemas";
 import type { CompletionRequest, CompletionResult, LlmGateway } from "@/llm/gateway";
 import type { DraftRepository } from "@/persistence/draft-types";
 import type { AgentRunCompletion } from "@/persistence/types";
-import { reviewDraftSession, runDrafting } from "./orchestrator";
+import { repairDraftRevision, reviewDraftSession, runDrafting } from "./orchestrator";
 
 const source: DraftSourceContext = {
   run_id: "00000000-0000-4000-8000-000000000001",
@@ -166,6 +166,26 @@ class MemoryDraftRepository implements DraftRepository {
   async listSessions(): Promise<DraftSession[]> { return this.session ? [this.session] : []; }
   async getSessionContext(): Promise<DraftSourceContext> { return this.context; }
   async saveOperatorRevision(): Promise<DraftSession | null> { return this.session; }
+  async saveRepairRevision(
+    sessionId: string,
+    platform: DraftPlatform,
+    content: string,
+    createdBy: string | null,
+  ): Promise<DraftSession | null> {
+    const revisions = this.session?.drafts.find((draft) => draft.platform === platform)?.revisions ?? [];
+    const nextRevision = Math.max(0, ...revisions.map((revision) => revision.revision)) + 1;
+    await this.saveRevision(
+      sessionId,
+      platform,
+      nextRevision,
+      "REPAIR",
+      content,
+      "UNCHECKED",
+      null,
+      createdBy,
+    );
+    return this.session;
+  }
   async approveCurrentRevision(): Promise<DraftSession | null> { return this.session; }
 }
 
@@ -301,6 +321,32 @@ describe("runDrafting", () => {
 
     expect(reviewer.calls).toEqual(["social_draft_reviews"]);
     expect(result.drafts[0].current.review_state).toBe("PASS");
+    expect(result.usage.total_tokens).toBe(600);
+  });
+
+  it("repairs any selected revision into a new unreviewed revision", async () => {
+    const repository = new MemoryDraftRepository();
+    await runDrafting(source, {
+      platforms: ["LINKEDIN"], evidence: "", guidance: "",
+    }, null, { gateway: new DraftFixtureGateway("REVISE"), repository });
+    const repairer = new DraftFixtureGateway("PASS");
+    const sessionId = repository.session?.id;
+    if (!sessionId) throw new Error("Expected a drafting session.");
+
+    const result = await repairDraftRevision(sessionId, {
+      platform: "LINKEDIN",
+      revision: 1,
+      instructions: "Make the opening more direct and soften the final claim.",
+    }, "editor@example.com", { gateway: repairer, repository });
+
+    expect(repairer.calls).toEqual(["social_draft_operator_repair"]);
+    expect(result.drafts[0].revisions).toHaveLength(3);
+    expect(result.drafts[0].current).toMatchObject({
+      revision: 3,
+      source: "REPAIR",
+      review_state: "UNCHECKED",
+      created_by: "editor@example.com",
+    });
     expect(result.usage.total_tokens).toBe(600);
   });
 });

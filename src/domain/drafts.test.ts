@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { DraftRequestSchema, PLATFORM_LIMITS, countDraftCharacters } from "./drafts";
+import {
+  DraftRepairRequestSchema,
+  DraftRequestSchema,
+  PLATFORM_LIMITS,
+  countDraftCharacters,
+} from "./drafts";
 
 describe("draft domain contracts", () => {
   it("requires a unique, bounded platform selection", () => {
@@ -12,6 +17,19 @@ describe("draft domain contracts", () => {
   it("counts Unicode code points rather than UTF-16 storage units", () => {
     expect("😀".length).toBe(2);
     expect(countDraftCharacters("A😀B")).toBe(3);
+  });
+
+  it("requires a concrete repair instruction and source revision", () => {
+    expect(DraftRepairRequestSchema.safeParse({
+      platform: "LINKEDIN",
+      revision: 2,
+      instructions: "Make the opening more direct.",
+    }).success).toBe(true);
+    expect(DraftRepairRequestSchema.safeParse({
+      platform: "LINKEDIN",
+      revision: 0,
+      instructions: "",
+    }).success).toBe(false);
   });
 
   it("keeps platform limits authoritative in application code", () => {

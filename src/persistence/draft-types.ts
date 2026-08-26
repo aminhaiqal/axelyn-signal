@@ -63,6 +63,12 @@ export interface DraftRepository {
     content: string,
     createdBy: string | null,
   ): Promise<DraftSession | null>;
+  saveRepairRevision(
+    sessionId: string,
+    platform: DraftPlatform,
+    content: string,
+    createdBy: string | null,
+  ): Promise<DraftSession | null>;
   approveCurrentRevision(
     sessionId: string,
     platform: DraftPlatform,

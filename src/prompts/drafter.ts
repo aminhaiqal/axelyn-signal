@@ -1,4 +1,6 @@
 import type {
+  DraftRepairRequest,
+  DraftRevision,
   DraftRequest,
   DraftSourceContext,
   PlatformReview,
@@ -88,6 +90,48 @@ ${JSON.stringify(drafts, null, 2)}
 
 REQUIRED REVIEW CHANGES:
 ${JSON.stringify(reviews, null, 2)}
+
+Return only the requested structured repair output.`;
+}
+
+export const operatorRepairSystemPrompt = `You are Drafter revising one social post under direct editorial instruction.
+
+Apply the operator's requested changes to the supplied revision. Preserve the authoritative brief, supported evidence, and any strong language that the request does not ask you to change. The repair instruction is editorial direction, not permission to invent facts, examples, outcomes, quotations, credentials, or first-person experience.
+
+If the request conflicts with the evidence rules, narrow the claim while following the safe parts of the request. Return a complete replacement post, not commentary about the edit.
+
+${platformRules}
+
+${editorialGuardrails}
+
+Return exactly one repaired draft for the supplied platform.`;
+
+export function operatorRepairUserPrompt(
+  source: DraftSourceContext,
+  evidence: string,
+  guidance: string,
+  revision: DraftRevision,
+  request: DraftRepairRequest,
+): string {
+  return `AUTHORITATIVE BRIEF:
+${JSON.stringify(source.brief, null, 2)}
+
+SUPPORTED OPERATOR EVIDENCE:
+${evidence || "No additional evidence supplied."}
+
+ORIGINAL WRITING DIRECTION:
+${guidance || "Use Axelyn's default editorial voice."}
+
+SOURCE REVISION:
+${JSON.stringify({
+  platform: revision.platform,
+  revision: revision.revision,
+  content: revision.content,
+  review: revision.review,
+}, null, 2)}
+
+OPERATOR REPAIR REQUEST:
+${request.instructions}
 
 Return only the requested structured repair output.`;
 }

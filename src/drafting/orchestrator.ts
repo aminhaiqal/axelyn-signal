@@ -6,12 +6,14 @@ import {
   type DraftAgentName,
 } from "@/config/agents";
 import {
+  DraftRepairRequestSchema,
   DraftRequestSchema,
   DraftReviewerOutputSchema,
   PLATFORM_LIMITS,
   WriterOutputSchema,
   countDraftCharacters,
   type DraftPlatform,
+  type DraftRepairRequest,
   type DraftRequest,
   type DraftReviewState,
   type DraftReviewerOutput,
@@ -27,6 +29,8 @@ import { draftReviewerSystemPrompt, draftReviewerUserPrompt } from "@/prompts/dr
 import {
   drafterSystemPrompt,
   drafterUserPrompt,
+  operatorRepairSystemPrompt,
+  operatorRepairUserPrompt,
   repairSystemPrompt,
   repairUserPrompt,
 } from "@/prompts/drafter";
@@ -317,6 +321,102 @@ export async function runDrafting(
       }
     }
     await onEvent({ type: "draft_session_failed", session_id: sessionId, error: message });
+    throw error;
+  }
+}
+
+export async function repairDraftRevision(
+  sessionId: string,
+  rawRequest: DraftRepairRequest,
+  createdBy: string | null,
+  dependencies: DraftingDependencies,
+): Promise<DraftSession> {
+  const request = DraftRepairRequestSchema.parse(rawRequest);
+  const { gateway, repository, onEvent = () => undefined } = dependencies;
+  const session = await repository.getSession(sessionId);
+  const source = await repository.getSessionContext(sessionId);
+  if (!session || !source) throw new Error("Drafting session not found.");
+
+  const platformView = session.drafts.find((draft) => draft.platform === request.platform);
+  const sourceRevision = platformView?.revisions.find(
+    (revision) => revision.revision === request.revision,
+  );
+  if (!sourceRevision) {
+    throw new Error(`Revision ${request.revision} was not found for ${request.platform}.`);
+  }
+
+  const config = getDraftAgentConfig().drafter;
+  const agentRunId = await repository.startAgentRun(
+    sessionId,
+    "drafter",
+    config.model,
+    { source, evidence: session.evidence, guidance: session.guidance, sourceRevision, request },
+  );
+  await onEvent({ type: "draft_stage_started", session_id: sessionId, stage: "repair" });
+  const startedAt = performance.now();
+  let agentCompleted = false;
+  try {
+    const result = await gateway.complete({
+      system: operatorRepairSystemPrompt,
+      user: operatorRepairUserPrompt(
+        source,
+        session.evidence,
+        session.guidance,
+        sourceRevision,
+        request,
+      ),
+      schemaName: "social_draft_operator_repair",
+      schema: WriterOutputSchema,
+      config,
+    });
+    assertExactPlatforms("Repair", [request.platform], result.data.drafts);
+    await repository.completeAgentRun(agentRunId, {
+      output: result.data,
+      model: result.model,
+      provider: result.provider,
+      generationId: result.generationId,
+      usage: result.usage,
+      durationMs: Math.round(performance.now() - startedAt),
+    });
+    agentCompleted = true;
+
+    const repairedDraft = result.data.drafts[0];
+    const saved = await repository.saveRepairRevision(
+      sessionId,
+      request.platform,
+      repairedDraft.content,
+      createdBy,
+    );
+    if (!saved) throw new Error("Drafting session not found.");
+
+    const status = saved.drafts.some((draft) => draft.current.review_state === "NEEDS_INPUT")
+      ? "NEEDS_INPUT"
+      : "READY_FOR_REVIEW";
+    await repository.finishSession(
+      sessionId,
+      status,
+      combineUsage(session.usage, result.usage),
+      { ...session.models, drafter: result.model },
+    );
+    const completed = await repository.getSession(sessionId);
+    if (!completed) throw new Error("The repaired drafting session could not be loaded.");
+    await onEvent({
+      type: "draft_stage_completed",
+      session_id: sessionId,
+      stage: "repair",
+      summary: `${request.platform === "LINKEDIN" ? "LinkedIn" : "Threads"} revision ${sourceRevision.revision} repaired as a new revision`,
+    });
+    await onEvent({ type: "draft_session_completed", session_id: sessionId, session: completed });
+    return completed;
+  } catch (error) {
+    if (!agentCompleted) {
+      const message = error instanceof Error ? error.message : "Draft repair failed unexpectedly.";
+      await repository.failAgentRun(
+        agentRunId,
+        message,
+        Math.round(performance.now() - startedAt),
+      );
+    }
     throw error;
   }
 }

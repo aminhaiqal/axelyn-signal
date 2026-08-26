@@ -44,12 +44,14 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
   const [sessions, setSessions] = useState<DraftSession[]>([]);
   const [session, setSession] = useState<DraftSession | null>(null);
   const [activePlatform, setActivePlatform] = useState<DraftPlatform>(initialPlatforms(brief)[0]);
+  const [selectedRevisionIds, setSelectedRevisionIds] = useState<Partial<Record<DraftPlatform, string>>>({});
   const [editorValues, setEditorValues] = useState<Record<string, string>>({});
+  const [repairInstructions, setRepairInstructions] = useState("");
   const [stage, setStage] = useState<DraftStage>("idle");
   const [stageSummary, setStageSummary] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [working, setWorking] = useState(false);
-  const [action, setAction] = useState<"save" | "review" | "approve" | "copy" | "buffer" | null>(null);
+  const [action, setAction] = useState<"save" | "repair" | "review" | "approve" | "copy" | "buffer" | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [bufferStatus, setBufferStatus] = useState<BufferKeyStatus | null>(null);
@@ -139,7 +141,10 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
   }, [applyBufferConnection]);
 
   const platformView = session?.drafts.find((draft) => draft.platform === activePlatform) ?? null;
-  const currentRevision = platformView?.current ?? null;
+  const latestRevision = platformView?.current ?? null;
+  const currentRevision = platformView?.revisions.find(
+    (revision) => revision.id === selectedRevisionIds[activePlatform],
+  ) ?? latestRevision;
   const editorValue = currentRevision
     ? editorValues[currentRevision.id] ?? currentRevision.content
     : "";
@@ -148,6 +153,10 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
   const platformLimit = PLATFORM_LIMITS[activePlatform];
   const changed = Boolean(currentRevision && editorValue !== currentRevision.content);
   const overLimit = characterCount > platformLimit;
+  const isLatestRevision = Boolean(
+    currentRevision && latestRevision && currentRevision.id === latestRevision.id,
+  );
+  const nextRevisionNumber = (latestRevision?.revision ?? 0) + 1;
   const bufferService = activePlatform === "LINKEDIN" ? "linkedin" : "threads";
   const eligibleBufferChannels = bufferChannels.filter((channel) => channel.service === bufferService);
   const selectedChannelId = selectedChannels[activePlatform] ?? "";
@@ -176,8 +185,24 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
   function chooseSession(next: DraftSession) {
     setSession(next);
     setActivePlatform(next.requested_platforms[0]);
+    setSelectedRevisionIds({});
+    setRepairInstructions("");
     setError("");
     setCopied(false);
+  }
+
+  function adoptUpdatedSession(next: DraftSession, selectLatestPlatform?: DraftPlatform) {
+    setSession(next);
+    setSessions((current) => current.map((item) => item.id === next.id ? next : item));
+    if (selectLatestPlatform) {
+      const nextLatest = next.drafts.find((draft) => draft.platform === selectLatestPlatform)?.current;
+      if (nextLatest) {
+        setSelectedRevisionIds((current) => ({
+          ...current,
+          [selectLatestPlatform]: nextLatest.id,
+        }));
+      }
+    }
   }
 
   function toggleStudio() {
@@ -239,6 +264,8 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
               ...current.filter((item) => item.id !== event.session.id),
             ]);
             setActivePlatform(event.session.requested_platforms[0]);
+            setSelectedRevisionIds({});
+            setRepairInstructions("");
             setStage("complete");
             setStageSummary("The publication proof is ready for human review.");
           }
@@ -255,7 +282,7 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
   }
 
   async function updateDraft(kind: "save" | "approve") {
-    if (!session || !currentRevision || action) return;
+    if (!session || !currentRevision || action || (kind === "approve" && !isLatestRevision)) return;
     setAction(kind);
     setError("");
     try {
@@ -270,8 +297,35 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
       });
       const data = (await response.json()) as { session?: DraftSession; error?: string };
       if (!response.ok || !data.session) throw new Error(data.error ?? "The draft could not be updated.");
-      setSession(data.session);
-      setSessions((current) => current.map((item) => item.id === data.session?.id ? data.session : item));
+      adoptUpdatedSession(data.session, kind === "save" ? activePlatform : undefined);
+    } catch (caught) {
+      setError(friendlyError(caught));
+    } finally {
+      setAction(null);
+    }
+  }
+
+  async function repairDraft() {
+    const instructions = repairInstructions.trim();
+    if (!session || !currentRevision || instructions.length < 3 || changed || action) return;
+    setAction("repair");
+    setError("");
+    try {
+      const response = await fetch(`/api/drafts/${session.id}/repair`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          platform: activePlatform,
+          revision: currentRevision.revision,
+          instructions,
+        }),
+      });
+      const data = (await response.json()) as { session?: DraftSession; error?: string };
+      if (!response.ok || !data.session) {
+        throw new Error(data.error ?? "Drafter could not repair this revision.");
+      }
+      adoptUpdatedSession(data.session, activePlatform);
+      setRepairInstructions("");
     } catch (caught) {
       setError(friendlyError(caught));
     } finally {
@@ -280,7 +334,7 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
   }
 
   async function checkAgain() {
-    if (!session || changed || action) return;
+    if (!session || changed || !isLatestRevision || action) return;
     setAction("review");
     setError("");
     try {
@@ -291,8 +345,7 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
       });
       const data = (await response.json()) as { session?: DraftSession; error?: string };
       if (!response.ok || !data.session) throw new Error(data.error ?? "The reviewer could not finish.");
-      setSession(data.session);
-      setSessions((current) => current.map((item) => item.id === data.session?.id ? data.session : item));
+      adoptUpdatedSession(data.session, activePlatform);
     } catch (caught) {
       setError(friendlyError(caught));
     } finally {
@@ -316,7 +369,7 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
   }
 
   async function sendToBuffer() {
-    if (!session || !currentRevision || !selectedChannelId || changed || action) return;
+    if (!session || !currentRevision || !selectedChannelId || changed || !isLatestRevision || action) return;
     setAction("buffer");
     setError("");
     setBufferError("");
@@ -334,8 +387,7 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
       if (!response.ok || !data.session || !data.delivery) {
         throw new Error(data.error ?? "The proof could not be sent to Buffer.");
       }
-      setSession(data.session);
-      setSessions((current) => current.map((item) => item.id === data.session?.id ? data.session : item));
+      adoptUpdatedSession(data.session);
     } catch (caught) {
       setBufferError(friendlyError(caught));
     } finally {
@@ -468,7 +520,10 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
                     role="tab"
                     aria-selected={activePlatform === draft.platform}
                     className={activePlatform === draft.platform ? "is-active" : ""}
-                    onClick={() => setActivePlatform(draft.platform)}
+                    onClick={() => {
+                      setActivePlatform(draft.platform);
+                      setRepairInstructions("");
+                    }}
                     key={draft.platform}
                   >
                     {platformLabel(draft.platform)}
@@ -478,11 +533,12 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
               </div>
 
               <div className="proof-sheet">
-                <div className="proof-copy-column">
+                <div className="proof-copy-column" key={currentRevision.id}>
                   <div className="proof-copy-meta">
-                    <span>Revision {currentRevision.revision}</span>
+                    <span>Revision {currentRevision.revision} of {platformView?.revisions.length ?? 1}</span>
                     <span>{currentRevision.source.toLowerCase()}</span>
                     {currentRevision.approved_at && <strong>Approved</strong>}
+                    {!isLatestRevision && <em>Viewing history</em>}
                   </div>
                   <textarea
                     className="proof-editor"
@@ -511,7 +567,18 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
                     >
                       {action === "save" ? "Saving…" : "Save revision"}
                     </button>
-                    <button type="button" onClick={() => void checkAgain()} disabled={changed || Boolean(action)} title={changed ? "Save this revision before review." : undefined}>
+                    <button
+                      type="button"
+                      onClick={() => void checkAgain()}
+                      disabled={changed || !isLatestRevision || Boolean(action)}
+                      title={
+                        changed
+                          ? "Save this revision before review."
+                          : !isLatestRevision
+                            ? "Create a new revision from this version before reviewing it."
+                            : undefined
+                      }
+                    >
                       {action === "review" ? "Reviewing…" : "Check again"}
                     </button>
                     <button type="button" onClick={() => void copyDraft()} disabled={!editorValue || Boolean(action)}>
@@ -521,10 +588,51 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
                       type="button"
                       className="approve-action"
                       onClick={() => void updateDraft("approve")}
-                      disabled={changed || overLimit || Boolean(action) || Boolean(currentRevision.approved_at)}
+                      disabled={changed || overLimit || !isLatestRevision || Boolean(action) || Boolean(currentRevision.approved_at)}
+                      title={!isLatestRevision ? "Only the newest revision can be approved." : undefined}
                     >
                       {currentRevision.approved_at ? "Approved" : action === "approve" ? "Approving…" : "Approve proof"}
                     </button>
+                  </div>
+
+                  <div className={`proof-repair-composer ${action === "repair" ? "is-working" : ""}`}>
+                    <div className="proof-repair-heading">
+                      <span>Repair with Drafter</span>
+                      <small>R{currentRevision.revision} → R{nextRevisionNumber}</small>
+                    </div>
+                    <div className="proof-repair-box">
+                      <textarea
+                        value={repairInstructions}
+                        onChange={(event) => setRepairInstructions(event.target.value)}
+                        onKeyDown={(event) => {
+                          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                            event.preventDefault();
+                            void repairDraft();
+                          }
+                        }}
+                        placeholder="Describe the repair: shorten the opening, keep the regulatory example, soften the final claim…"
+                        aria-label={`Repair instructions for revision ${currentRevision.revision}`}
+                        maxLength={2000}
+                        disabled={Boolean(action)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void repairDraft()}
+                        disabled={
+                          repairInstructions.trim().length < 3 ||
+                          changed ||
+                          Boolean(action)
+                        }
+                      >
+                        {action === "repair" ? "Repairing…" : "Create revision"}
+                        <span>↗</span>
+                      </button>
+                    </div>
+                    <p>
+                      {changed
+                        ? "Save the edits in the proof first, then give Drafter the repair brief."
+                        : "The selected revision stays untouched. Drafter’s result is added as the newest revision."}
+                    </p>
                   </div>
 
                   <div className="buffer-delivery-docket">
@@ -567,6 +675,7 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
                             Boolean(action) ||
                             changed ||
                             overLimit ||
+                            !isLatestRevision ||
                             !currentRevision.approved_at ||
                             !selectedChannelId ||
                             Boolean(selectedDelivery)
@@ -582,8 +691,12 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
                         </button>
                       </div>
                     )}
-                    {!currentRevision.approved_at && bufferStatus?.configured && (
-                      <small>Approve this exact revision before sending it.</small>
+                    {bufferStatus?.configured && (!currentRevision.approved_at || !isLatestRevision) && (
+                      <small>
+                        {isLatestRevision
+                          ? "Approve this exact revision before sending it."
+                          : "Return to the newest revision before approving or sending."}
+                      </small>
                     )}
                     {currentRevision.buffer_deliveries.length > 0 && (
                       <ol className="buffer-delivery-history">
@@ -637,11 +750,31 @@ export function DraftStudio({ runId, brief }: { runId: string; brief: FinalBrief
                 <span>Revision ledger</span>
                 <ol>
                   {platformView?.revisions.map((revision) => (
-                    <li className={revision.id === currentRevision.id ? "is-current" : ""} key={revision.id}>
-                      <strong>R{revision.revision}</strong>
-                      <span>{revision.source.toLowerCase()}</span>
-                      <time>{new Date(revision.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
-                      {revision.approved_at && <b>approved</b>}
+                    <li
+                      className={[
+                        revision.id === currentRevision.id ? "is-selected" : "",
+                        revision.id === latestRevision?.id ? "is-current" : "",
+                      ].filter(Boolean).join(" ")}
+                      key={revision.id}
+                    >
+                      <button
+                        type="button"
+                        aria-pressed={revision.id === currentRevision.id}
+                        onClick={() => {
+                          setSelectedRevisionIds((current) => ({
+                            ...current,
+                            [activePlatform]: revision.id,
+                          }));
+                          setRepairInstructions("");
+                          setError("");
+                        }}
+                      >
+                        <strong>R{revision.revision}</strong>
+                        <span>{revision.source.toLowerCase()}</span>
+                        <time>{new Date(revision.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
+                        {revision.id === latestRevision?.id && <i>latest</i>}
+                        {revision.approved_at && <b>approved</b>}
+                      </button>
                     </li>
                   ))}
                 </ol>
