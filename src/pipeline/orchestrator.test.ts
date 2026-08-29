@@ -42,6 +42,7 @@ class MemoryRepository implements PipelineRepository {
   async failRun(runId: string, error: string) { void [runId, error]; }
   async listRuns(limit?: number): Promise<RecentRun[]> { void limit; return []; }
   async getRun(id: string): Promise<StoredRun | null> { void id; return null; }
+  async deleteRun(id: string): Promise<boolean> { void id; return false; }
 }
 
 class FixtureGateway implements LlmGateway {
@@ -100,10 +101,10 @@ class FixtureGateway implements LlmGateway {
         ],
       };
     } else if (request.schemaName === "critic_output") {
-      const ids = [...request.user.matchAll(/"id": "([^"]+)"/g)].map((match) => match[1]);
+      const references = [...request.user.matchAll(/"candidate_ref": "([^"]+)"/g)]
+        .map((match) => match[1]);
       data = {
-        evaluations: ids.map((id, index) => ({
-          candidate_id: id,
+        evaluations: Object.fromEntries(references.map((reference, index) => [reference, {
           originality: index === 1 ? 5 : 78,
           credibility: index === 1 ? 15 : 85,
           audience_relevance: index === 1 ? 20 : 82,
@@ -117,13 +118,13 @@ class FixtureGateway implements LlmGateway {
           risks: index === 1 ? ["Empty universal claim"] : [],
           recommendation: index === 1 ? "KILL" : index === 2 ? "REWORK" : "KEEP",
           reasoning: index === 1 ? "Fails the 500-creators test." : "Specific and credible enough to develop.",
-        })),
+        }])),
       };
     } else {
-      const ids = [...new Set([...request.user.matchAll(/"id": "([^"]+)"/g)].map((match) => match[1]))];
+      const references = [...request.user.matchAll(/"candidate_ref": "([^"]+)"/g)]
+        .map((match) => match[1]);
       data = {
-        evaluations: ids.map((id, index) => ({
-          candidate_id: id,
+        evaluations: Object.fromEntries(references.map((reference, index) => [reference, {
           title: index === 0 ? "When code gets cheaper, decisions get expensive" : "Your validation loop is now the bottleneck",
           primary_job: "THINK",
           target_audience: index === 0 ? ["founders", "CTOs"] : ["product leaders"],
@@ -155,7 +156,7 @@ class FixtureGateway implements LlmGateway {
             weak_axelyn_connection: 5,
           },
           strategic_reasoning: "A credible, relevant idea with a specific evidence need.",
-        })),
+        }])),
       };
     }
 

@@ -2,6 +2,7 @@ import type { Candidate, CriticEvaluation, ScoutOutput } from "@/domain/schemas"
 import { editorialGuardrails, taxonomyGuide } from "./shared";
 
 export interface StrategyCandidate {
+  candidate_ref: string;
   candidate: Candidate;
   critique: CriticEvaluation;
 }
@@ -20,7 +21,7 @@ ${taxonomyGuide}
 
 ${editorialGuardrails}
 
-The LinkedIn and Threads fields describe how the angle should change for each platform; they are not finished posts or hooks. Preserve candidate_id and evaluate every provided survivor exactly once.`;
+The LinkedIn and Threads fields describe how the angle should change for each platform; they are not finished posts or hooks. Evaluate every provided survivor exactly once. The structured output's evaluations object is keyed by the short candidate_ref values; preserve those keys exactly.`;
 
 export function strategistUserPrompt(
   scout: ScoutOutput,
@@ -36,5 +37,5 @@ ${JSON.stringify({ signal: scout.signal, change: scout.change, tension: scout.te
 SURVIVING CANDIDATES WITH CRITIQUE:
 ${JSON.stringify(candidates, null, 2)}
 
-Return only the requested structured Strategist output. Do not create candidates that were not provided.`;
+Return only the requested structured Strategist output. Fill every candidate_ref key exactly once and do not create candidates that were not provided.`;
 }

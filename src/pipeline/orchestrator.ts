@@ -3,12 +3,10 @@ import type { z } from "zod";
 import { contextFor } from "@/config/axelyn-context";
 import { getAgentConfig, type AgentConfig, type AgentName } from "@/config/agents";
 import {
-  CriticOutputSchema,
   ExplorerOutputSchema,
   PipelineResultSchema,
   ScoutOutputSchema,
   SignalInputSchema,
-  StrategistOutputSchema,
   type Candidate,
   type CriticEvaluation,
   type FinalBrief,
@@ -24,6 +22,13 @@ import { explorerSystemPrompt, explorerUserPrompt } from "@/prompts/explorer";
 import { scoutSystemPrompt, scoutUserPrompt } from "@/prompts/scout";
 import { strategistSystemPrompt, strategistUserPrompt } from "@/prompts/strategist";
 import type { PipelineEventHandler } from "./events";
+import {
+  candidateReference,
+  criticEvaluationRequestSchema,
+  restoreCriticCandidateIds,
+  restoreStrategistCandidateIds,
+  strategistEvaluationRequestSchema,
+} from "./evaluation-contract";
 
 export interface PipelineDependencies {
   gateway: LlmGateway;
@@ -194,20 +199,25 @@ export async function runPipeline(
       summary: `${candidates.length} angles across ${selectedTaxonomies.size} primary jobs`,
     });
 
+    const referencedCandidates = candidates.map((candidate, index) => ({
+      candidate_ref: candidateReference(index),
+      candidate,
+    }));
     const criticResult = await executeStage({
       runId,
       agent: "critic",
       config: config.critic,
       system: criticSystemPrompt,
-      user: criticUserPrompt(scout, candidates, contextFor("critic")),
+      user: criticUserPrompt(scout, referencedCandidates, contextFor("critic")),
       schemaName: "critic_output",
-      schema: CriticOutputSchema,
+      schema: criticEvaluationRequestSchema(candidates),
       persistenceInput: { scout, candidates },
     });
-    assertMatchingIds("Critic", candidates, criticResult.data.evaluations);
-    await repository.saveCritiques(runId, criticResult.data.evaluations);
+    const criticOutput = restoreCriticCandidateIds(candidates, criticResult.data.evaluations);
+    assertMatchingIds("Critic", candidates, criticOutput.evaluations);
+    await repository.saveCritiques(runId, criticOutput.evaluations);
     const critiquesById = new Map(
-      criticResult.data.evaluations.map((evaluation) => [evaluation.candidate_id, evaluation]),
+      criticOutput.evaluations.map((evaluation) => [evaluation.candidate_id, evaluation]),
     );
     const survivors = candidates.filter(
       (candidate) => critiquesById.get(candidate.id)?.recommendation !== "KILL",
@@ -221,7 +231,8 @@ export async function runPipeline(
 
     let briefs: FinalBrief[] = [];
     if (survivors.length > 0) {
-      const strategyCandidates = survivors.map((candidate) => ({
+      const strategyCandidates = survivors.map((candidate, index) => ({
+        candidate_ref: candidateReference(index),
         candidate,
         critique: critiquesById.get(candidate.id) as CriticEvaluation,
       }));
@@ -232,27 +243,31 @@ export async function runPipeline(
         system: strategistSystemPrompt,
         user: strategistUserPrompt(scout, strategyCandidates, contextFor("strategist")),
         schemaName: "strategist_output",
-        schema: StrategistOutputSchema,
+        schema: strategistEvaluationRequestSchema(survivors),
         persistenceInput: { scout, candidates: strategyCandidates },
       });
-      assertMatchingIds("Strategist", survivors, strategistResult.data.evaluations);
+      const strategistOutput = restoreStrategistCandidateIds(
+        survivors,
+        strategistResult.data.evaluations,
+      );
+      assertMatchingIds("Strategist", survivors, strategistOutput.evaluations);
 
       const candidatesById = new Map(survivors.map((candidate) => [candidate.id, candidate]));
-      for (const evaluation of strategistResult.data.evaluations) {
+      for (const evaluation of strategistOutput.evaluations) {
         if (evaluation.primary_job !== candidatesById.get(evaluation.candidate_id)?.taxonomy) {
           throw new Error("Strategist changed a candidate's primary job.");
         }
       }
 
       const scores = new Map(
-        strategistResult.data.evaluations.map((evaluation) => [
+        strategistOutput.evaluations.map((evaluation) => [
           evaluation.candidate_id,
           calculateStrategistScore(evaluation),
         ]),
       );
-      await repository.saveStrategies(runId, strategistResult.data.evaluations, scores);
+      await repository.saveStrategies(runId, strategistOutput.evaluations, scores);
 
-      briefs = strategistResult.data.evaluations
+      briefs = strategistOutput.evaluations
         .filter((evaluation) => evaluation.readiness_status !== "KILLED")
         .map((evaluation) => {
           return {
