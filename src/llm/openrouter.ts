@@ -1,5 +1,10 @@
 import { z } from "zod";
-import type { CompletionRequest, CompletionResult, LlmGateway } from "./gateway";
+import {
+  InvalidStructuredOutputError,
+  type CompletionRequest,
+  type CompletionResult,
+  type LlmGateway,
+} from "./gateway";
 
 interface OpenRouterResponse {
   id?: string;
@@ -166,7 +171,9 @@ export class OpenRouterGateway implements LlmGateway {
           issuePath: issue.path.join(".") || "root",
           issueMessage: issue.message,
         });
-        throw new Error(`The selected model returned an invalid ${request.schemaName} payload at ${issue.path.join(".") || "root"}: ${issue.message}`);
+        throw new InvalidStructuredOutputError(
+          `The selected model returned an invalid ${request.schemaName} payload at ${issue.path.join(".") || "root"}: ${issue.message}`,
+        );
       }
 
       const promptTokens = payload.usage?.prompt_tokens ?? 0;

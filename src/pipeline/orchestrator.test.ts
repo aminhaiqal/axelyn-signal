@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentName } from "@/config/agents";
 import type {
   Candidate,
@@ -9,7 +9,12 @@ import type {
   StrategistEvaluation,
   Usage,
 } from "@/domain/schemas";
-import type { CompletionRequest, CompletionResult, LlmGateway } from "@/llm/gateway";
+import {
+  InvalidStructuredOutputError,
+  type CompletionRequest,
+  type CompletionResult,
+  type LlmGateway,
+} from "@/llm/gateway";
 import type { AgentRunCompletion, PipelineRepository, RecentRun, StoredRun } from "@/persistence/types";
 import { runPipeline } from "./orchestrator";
 
@@ -47,6 +52,9 @@ class MemoryRepository implements PipelineRepository {
 
 class FixtureGateway implements LlmGateway {
   calls: string[] = [];
+  private strategistCallCount = 0;
+
+  constructor(private readonly failedStrategistCalls = new Set<number>()) {}
 
   async complete<T>(request: CompletionRequest<T>): Promise<CompletionResult<T>> {
     this.calls.push(request.schemaName);
@@ -121,6 +129,13 @@ class FixtureGateway implements LlmGateway {
         }])),
       };
     } else {
+      const strategistCall = this.strategistCallCount;
+      this.strategistCallCount += 1;
+      if (this.failedStrategistCalls.has(strategistCall)) {
+        throw new InvalidStructuredOutputError(
+          "The selected model returned an invalid strategist_output payload.",
+        );
+      }
       const references = [...request.user.matchAll(/"candidate_ref": "([^"]+)"/g)]
         .map((match) => match[1]);
       data = {
@@ -181,12 +196,37 @@ describe("runPipeline", () => {
     }, { gateway, repository });
 
     const killedId = repository.critiques.find((critique) => critique.recommendation === "KILL")?.candidate_id;
-    expect(gateway.calls).toEqual(["scout_output", "explorer_output", "critic_output", "strategist_output"]);
+    expect(gateway.calls).toEqual([
+      "scout_output",
+      "explorer_output",
+      "critic_output",
+      "strategist_output",
+      "strategist_output",
+    ]);
     expect(result.status).toBe("COMPLETED");
     expect(result.briefs).toHaveLength(2);
     expect(result.briefs.map((brief) => brief.candidate_id)).not.toContain(killedId);
     expect(result.briefs[0].score).toBeGreaterThanOrEqual(result.briefs[1].score);
-    expect(result.usage.total_tokens).toBe(600);
+    expect(result.usage.total_tokens).toBe(750);
     expect(repository.briefs).toEqual(result.briefs);
+  });
+
+  it("retries malformed Strategist output and isolates a repeatedly invalid candidate", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const gateway = new FixtureGateway(new Set([0, 1]));
+    const repository = new MemoryRepository();
+
+    const result = await runPipeline({
+      source_type: "observation",
+      content: "AI coding makes implementation much faster, but companies can still build the wrong thing.",
+      context: "Thinking about how AI changes software engineering.",
+    }, { gateway, repository });
+
+    expect(result.status).toBe("COMPLETED");
+    expect(result.briefs).toHaveLength(1);
+    expect(repository.strategies).toHaveLength(1);
+    expect(gateway.calls.filter((call) => call === "strategist_output")).toHaveLength(3);
+    expect(log).toHaveBeenCalledTimes(2);
+    log.mockRestore();
   });
 });
