@@ -12,10 +12,15 @@ import {
   type FinalBrief,
   type PipelineResult,
   type SignalInput,
+  type StrategistEvaluation,
   type Usage,
 } from "@/domain/schemas";
 import { calculateStrategistScore } from "@/domain/scoring";
-import type { CompletionResult, LlmGateway } from "@/llm/gateway";
+import {
+  InvalidStructuredOutputError,
+  type CompletionResult,
+  type LlmGateway,
+} from "@/llm/gateway";
 import type { PipelineRepository } from "@/persistence/types";
 import { criticSystemPrompt, criticUserPrompt } from "@/prompts/critic";
 import { explorerSystemPrompt, explorerUserPrompt } from "@/prompts/explorer";
@@ -56,6 +61,8 @@ const emptyUsage = (): Usage => ({
   cost: 0,
   estimated_cost: 0,
 });
+
+const STRATEGIST_ATTEMPTS_PER_CANDIDATE = 2;
 
 function combineUsage(total: Usage, next: Usage): Usage {
   return {
@@ -231,43 +238,78 @@ export async function runPipeline(
 
     let briefs: FinalBrief[] = [];
     if (survivors.length > 0) {
-      const strategyCandidates = survivors.map((candidate, index) => ({
-        candidate_ref: candidateReference(index),
-        candidate,
-        critique: critiquesById.get(candidate.id) as CriticEvaluation,
-      }));
-      const strategistResult = await executeStage({
-        runId,
-        agent: "strategist",
-        config: config.strategist,
-        system: strategistSystemPrompt,
-        user: strategistUserPrompt(scout, strategyCandidates, contextFor("strategist")),
-        schemaName: "strategist_output",
-        schema: strategistEvaluationRequestSchema(survivors),
-        persistenceInput: { scout, candidates: strategyCandidates },
-      });
-      const strategistOutput = restoreStrategistCandidateIds(
-        survivors,
-        strategistResult.data.evaluations,
-      );
-      assertMatchingIds("Strategist", survivors, strategistOutput.evaluations);
+      const strategistEvaluations: StrategistEvaluation[] = [];
+      let strategistFailureCount = 0;
+
+      for (const candidate of survivors) {
+        const strategyCandidates = [{
+          candidate_ref: candidateReference(0),
+          candidate,
+          critique: critiquesById.get(candidate.id) as CriticEvaluation,
+        }];
+        let evaluated = false;
+
+        for (let attempt = 1; attempt <= STRATEGIST_ATTEMPTS_PER_CANDIDATE; attempt += 1) {
+          try {
+            const basePrompt = strategistUserPrompt(
+              scout,
+              strategyCandidates,
+              contextFor("strategist"),
+            );
+            const strategistResult = await executeStage({
+              runId,
+              agent: "strategist",
+              config: config.strategist,
+              system: strategistSystemPrompt,
+              user: attempt === 1
+                ? basePrompt
+                : `${basePrompt}\n\nRETRY REQUIREMENT: The previous response failed schema validation. Return a complete C01 evaluation with every required field.`,
+              schemaName: "strategist_output",
+              schema: strategistEvaluationRequestSchema([candidate]),
+              persistenceInput: { scout, candidates: strategyCandidates, attempt },
+            });
+            const strategistOutput = restoreStrategistCandidateIds(
+              [candidate],
+              strategistResult.data.evaluations,
+            );
+            assertMatchingIds("Strategist", [candidate], strategistOutput.evaluations);
+            strategistEvaluations.push(strategistOutput.evaluations[0]);
+            evaluated = true;
+            break;
+          } catch (error) {
+            if (!(error instanceof InvalidStructuredOutputError)) throw error;
+            console.error("Strategist candidate evaluation failed", {
+              runId,
+              candidateId: candidate.id,
+              attempt,
+              error: error instanceof Error ? error.message : "Unknown Strategist error",
+            });
+          }
+        }
+
+        if (!evaluated) strategistFailureCount += 1;
+      }
+
+      if (strategistEvaluations.length === 0) {
+        throw new Error("Strategist could not produce a valid evaluation for any candidate.");
+      }
 
       const candidatesById = new Map(survivors.map((candidate) => [candidate.id, candidate]));
-      for (const evaluation of strategistOutput.evaluations) {
+      for (const evaluation of strategistEvaluations) {
         if (evaluation.primary_job !== candidatesById.get(evaluation.candidate_id)?.taxonomy) {
           throw new Error("Strategist changed a candidate's primary job.");
         }
       }
 
       const scores = new Map(
-        strategistOutput.evaluations.map((evaluation) => [
+        strategistEvaluations.map((evaluation) => [
           evaluation.candidate_id,
           calculateStrategistScore(evaluation),
         ]),
       );
-      await repository.saveStrategies(runId, strategistOutput.evaluations, scores);
+      await repository.saveStrategies(runId, strategistEvaluations, scores);
 
-      briefs = strategistOutput.evaluations
+      briefs = strategistEvaluations
         .filter((evaluation) => evaluation.readiness_status !== "KILLED")
         .map((evaluation) => {
           return {
@@ -298,7 +340,9 @@ export async function runPipeline(
         type: "stage_completed",
         run_id: runId,
         stage: "strategist",
-        summary: `${briefs.length} editorial briefs ranked`,
+        summary: strategistFailureCount === 0
+          ? `${briefs.length} editorial briefs ranked`
+          : `${briefs.length} editorial briefs ranked · ${strategistFailureCount} ${strategistFailureCount === 1 ? "evaluation" : "evaluations"} unavailable`,
       });
     } else {
       await onEvent({

@@ -2,6 +2,13 @@ import type { z } from "zod";
 import type { AgentConfig } from "@/config/agents";
 import type { Usage } from "@/domain/schemas";
 
+export class InvalidStructuredOutputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidStructuredOutputError";
+  }
+}
+
 export interface CompletionRequest<T> {
   system: string;
   user: string;
