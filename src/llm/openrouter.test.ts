@@ -14,6 +14,7 @@ const request: CompletionRequest<z.infer<typeof OutputSchema>> = {
     model: "anthropic/claude-sonnet-5",
     reasoningEffort: "low",
     verbosity: "medium",
+    requireStructuredOutputProvider: true,
     maxOutputTokens: 500,
     inputPricePerToken: 0.000001,
     outputPricePerToken: 0.000002,
@@ -47,7 +48,7 @@ function completion(content: string, finishReason = "stop") {
 }
 
 describe("OpenRouterGateway structured output", () => {
-  it("enables response healing without blocking provider routing", async () => {
+  it("requires a capable provider when the stage needs strict structured output", async () => {
     let body: Record<string, unknown> = {};
     const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
       body = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -61,13 +62,32 @@ describe("OpenRouterGateway structured output", () => {
     ).complete(request);
 
     expect(result.data).toEqual({ message: "Ready" });
-    expect(body).not.toHaveProperty("provider");
+    expect(body.provider).toEqual({ require_parameters: true });
     expect(body.plugins).toEqual([{ id: "response-healing" }]);
     expect(body.stream).toBe(false);
     expect(body.response_format).toMatchObject({
       type: "json_schema",
       json_schema: { name: "test_message", strict: true },
     });
+  });
+
+  it("leaves provider routing unrestricted for stages with other model parameters", async () => {
+    let body: Record<string, unknown> = {};
+    const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return jsonResponse(completion('{"message":"Ready"}'));
+    }) as typeof fetch;
+
+    await new OpenRouterGateway(
+      "test-openrouter-key",
+      "https://openrouter.test/chat/completions",
+      fetcher,
+    ).complete({
+      ...request,
+      config: { ...request.config, requireStructuredOutputProvider: false },
+    });
+
+    expect(body).not.toHaveProperty("provider");
   });
 
   it("reports output-limit truncation separately from malformed JSON", async () => {

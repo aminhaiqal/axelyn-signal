@@ -105,6 +105,9 @@ export class OpenRouterGateway implements LlmGateway {
           ...(request.config.verbosity ? { verbosity: request.config.verbosity } : {}),
           max_tokens: request.config.maxOutputTokens,
           stream: false,
+          ...(request.config.requireStructuredOutputProvider
+            ? { provider: { require_parameters: true } }
+            : {}),
           plugins: [{ id: "response-healing" }],
           messages: [
             { role: "system", content: request.system },
