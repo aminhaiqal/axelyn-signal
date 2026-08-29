@@ -55,4 +55,5 @@ export interface PipelineRepository {
   failRun(runId: string, error: string): Promise<void>;
   listRuns(limit?: number): Promise<RecentRun[]>;
   getRun(id: string): Promise<StoredRun | null>;
+  deleteRun(id: string): Promise<boolean>;
 }

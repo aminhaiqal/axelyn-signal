@@ -182,13 +182,9 @@ summary:focus-visible {
   position: relative;
   width: 100%;
   display: block;
-  padding: 13px 24px 13px 10px;
   color: #bec4cf;
-  text-align: left;
   background: transparent;
-  border: 0;
   border-top: 1px solid #292f39;
-  cursor: pointer;
   transition: color 160ms ease, background 160ms ease;
 }
 
@@ -208,6 +204,25 @@ summary:focus-visible {
   inset: 0 auto 0 0;
   width: 2px;
   background: var(--cobalt);
+}
+
+.history-open {
+  width: 100%;
+  display: block;
+  padding: 13px 42px 13px 10px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.history-open:disabled {
+  cursor: not-allowed;
+}
+
+.history-item.is-deleting {
+  opacity: 0.55;
 }
 
 .history-copy {
@@ -245,6 +260,50 @@ summary:focus-visible {
 .history-item.is-current .history-arrow {
   opacity: 1;
   transform: translate(0, 0);
+}
+
+.history-delete {
+  position: absolute;
+  right: 5px;
+  bottom: 9px;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  color: #7b8494;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  transition: color 160ms ease, background 160ms ease, opacity 160ms ease;
+}
+
+.history-delete svg {
+  width: 14px;
+}
+
+.history-item:hover .history-delete,
+.history-item.is-current .history-delete,
+.history-delete:focus-visible {
+  opacity: 1;
+}
+
+.history-delete:hover:not(:disabled) {
+  color: #ffb4b4;
+  background: rgba(184, 60, 60, 0.18);
+}
+
+.history-delete:disabled {
+  cursor: not-allowed;
+}
+
+.history-error {
+  margin: 10px 4px 0;
+  color: #e69a9a;
+  font-size: 9px;
+  line-height: 1.5;
 }
 
 .settings-trigger {

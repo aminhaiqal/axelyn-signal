@@ -19,6 +19,7 @@ import {
   Plus,
   SettingsIcon,
   SignalMark,
+  TrashIcon,
 } from "./icons";
 
 type AgentName = "scout" | "explorer" | "critic" | "strategist";
@@ -123,6 +124,8 @@ export function SignalWorkspace() {
   const [error, setError] = useState("");
   const [runs, setRuns] = useState<RecentRun[]>([]);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState("");
   const [apiConfigured, setApiConfigured] = useState<boolean | null>(null);
   const [models, setModels] = useState<Record<string, string>>({});
   const [operatorEmail, setOperatorEmail] = useState<string | null>(null);
@@ -415,7 +418,7 @@ export function SignalWorkspace() {
   }
 
   async function openRun(id: string) {
-    if (status === "running") return;
+    if (status === "running" || deletingRunId) return;
     try {
       const response = await fetch(`/api/runs/${id}`);
       if (!response.ok) throw new Error("That run could not be loaded.");
@@ -462,6 +465,28 @@ export function SignalWorkspace() {
     }
   }
 
+  async function deleteRun(run: RecentRun) {
+    if (status === "running" || deletingRunId) return;
+    const preview = run.content.length > 90 ? `${run.content.slice(0, 87)}…` : run.content;
+    if (!window.confirm(
+      `Delete this run and all of its briefs and drafts? This cannot be undone.\n\n“${preview}”`,
+    )) return;
+
+    setDeletingRunId(run.id);
+    setHistoryError("");
+    try {
+      const response = await fetch(`/api/runs/${run.id}`, { method: "DELETE" });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "That run could not be deleted.");
+      setRuns((current) => current.filter(({ id }) => id !== run.id));
+      if (activeRunId === run.id) newSignal();
+    } catch (caught) {
+      setHistoryError(caught instanceof Error ? caught.message : "That run could not be deleted.");
+    } finally {
+      setDeletingRunId(null);
+    }
+  }
+
   function newSignal() {
     if (status === "running") return;
     setContent("");
@@ -501,20 +526,36 @@ export function SignalWorkspace() {
             {runs.length === 0 ? (
               <p className="history-empty">Completed runs will appear here.</p>
             ) : runs.map((run) => (
-              <button
-                type="button"
-                className={`history-item ${activeRunId === run.id ? "is-current" : ""}`}
+              <div
+                className={`history-item ${activeRunId === run.id ? "is-current" : ""} ${deletingRunId === run.id ? "is-deleting" : ""}`}
                 key={run.id}
-                onClick={() => void openRun(run.id)}
               >
-                <span className="history-copy">{run.content}</span>
-                <span className="history-meta">
-                  <span>{relativeDate(run.created_at)}</span>
-                  <span>{run.brief_count} briefs</span>
-                </span>
-                <ArrowUpRight className="history-arrow" />
-              </button>
+                <button
+                  type="button"
+                  className="history-open"
+                  onClick={() => void openRun(run.id)}
+                  disabled={Boolean(deletingRunId)}
+                >
+                  <span className="history-copy">{run.content}</span>
+                  <span className="history-meta">
+                    <span>{relativeDate(run.created_at)}</span>
+                    <span>{run.brief_count} briefs</span>
+                  </span>
+                  <ArrowUpRight className="history-arrow" />
+                </button>
+                <button
+                  type="button"
+                  className="history-delete"
+                  onClick={() => void deleteRun(run)}
+                  disabled={status === "running" || Boolean(deletingRunId)}
+                  aria-label={`Delete run: ${run.content}`}
+                  title="Delete run"
+                >
+                  <TrashIcon />
+                </button>
+              </div>
             ))}
+            {historyError && <p className="history-error" role="alert">{historyError}</p>}
           </div>
         </nav>
 

@@ -227,4 +227,13 @@ export class PostgresPipelineRepository implements PipelineRepository {
       models: (row.models_json as Record<string, string>) ?? {},
     };
   }
+
+  async deleteRun(id: string): Promise<boolean> {
+    await ensureDatabase();
+    const result = await getPool().query(
+      "DELETE FROM pipeline_runs WHERE id = $1 RETURNING id",
+      [id],
+    );
+    return result.rowCount === 1;
+  }
 }
